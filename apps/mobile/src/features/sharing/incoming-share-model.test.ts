@@ -175,6 +175,29 @@ describe("incoming native shares", () => {
     expect(removeOwnedFile).toHaveBeenCalledWith(file.value);
   });
 
+  it("reports an unreadable shared file without calling it oversized", async () => {
+    const file: SharePayload = {
+      shareType: "file",
+      value: "file:///shared/empty.txt",
+      mimeType: "text/plain",
+    };
+
+    const result = await buildIncomingShareDraft({
+      id: "share-empty",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [file],
+      resolvedPayloads: [],
+      fileReader: {
+        readBase64: async () => "unused",
+        readSize: async () => 0,
+        removeOwnedFile: async () => undefined,
+      },
+    });
+
+    expect(result.attachments).toEqual([]);
+    expect(result.warnings).toEqual(["'empty.txt' is empty or could not be read."]);
+  });
+
   it("releases every temporary file when a share exceeds the attachment limit", async () => {
     const payloads = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 }, (_, index) => ({
       shareType: "image" as const,

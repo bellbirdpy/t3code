@@ -105,6 +105,49 @@ describe("pickComposerFiles", () => {
     expect(mocks.copy).not.toHaveBeenCalled();
   });
 
+  it("reports an empty file without calling it oversized", async () => {
+    mocks.pickFile.mockResolvedValue({
+      canceled: false,
+      result: [
+        {
+          uri: "file:///downloads/empty.txt",
+          name: "empty.txt",
+          type: "text/plain",
+          size: 0,
+        },
+      ],
+    });
+
+    await expect(pickComposerFiles({ existingCount: 0 })).resolves.toEqual({
+      files: [],
+      error: "'empty.txt' is empty or could not be read.",
+    });
+  });
+
+  it("uses the remaining slot for the first valid file after an oversized selection", async () => {
+    mocks.pickFile.mockResolvedValue({
+      canceled: false,
+      result: [
+        {
+          uri: "file:///downloads/huge.zip",
+          name: "huge.zip",
+          type: "application/zip",
+          size: 2 * 1024 * 1024,
+        },
+        {
+          uri: "file:///downloads/report.pdf",
+          name: "report.pdf",
+          type: "application/pdf",
+          size: 42,
+        },
+      ],
+    });
+
+    const result = await pickComposerFiles({ existingCount: 7, maxBytes: 1024 * 1024 });
+
+    expect(result.files.map((file) => file.name)).toEqual(["report.pdf"]);
+  });
+
   it("deletes app-owned attachments without touching user-owned files", async () => {
     await removePersistedComposerAttachmentFile(
       "file:///documents/t3-composer-attachments/report.pdf",

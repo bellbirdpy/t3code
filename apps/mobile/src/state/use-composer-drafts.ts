@@ -18,6 +18,7 @@ import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { SerializedAsyncQueue } from "../lib/serialized-async-queue";
 import { appAtomRegistry } from "./atom-registry";
+import { flushThreadOutbox, threadOutboxManager } from "./thread-outbox";
 
 const COMPOSER_DRAFTS_SCHEMA_VERSION = 1;
 const COMPOSER_DRAFTS_DIRECTORY = "composer-drafts";
@@ -229,6 +230,50 @@ export async function flushComposerDrafts(): Promise<void> {
   } while (persistTimer !== null);
 }
 
+export async function releaseUnusedComposerAttachmentFiles(
+  attachments: ReadonlyArray<DraftComposerAttachment>,
+): Promise<void> {
+  const candidates = new Set(
+    attachments
+      .filter((attachment) => attachment.type === "file")
+      .map((attachment) => attachment.fileUri),
+  );
+  if (candidates.size === 0) {
+    return;
+  }
+
+  await flushComposerDrafts();
+  await flushThreadOutbox();
+
+  const drafts = Object.values(appAtomRegistry.get(composerDraftsAtom));
+  const queuedMessages = Object.values(
+    appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+  ).flat();
+  for (const owner of [...drafts, ...queuedMessages]) {
+    for (const attachment of owner.attachments) {
+      if (attachment.type === "file") {
+        candidates.delete(attachment.fileUri);
+      }
+    }
+  }
+
+  if (candidates.size > 0) {
+    const { removePersistedComposerAttachmentFile } = await import("../lib/composerImages");
+    await Promise.all([...candidates].map((uri) => removePersistedComposerAttachmentFile(uri)));
+  }
+}
+
+function scheduleUnusedComposerAttachmentCleanup(
+  attachments: ReadonlyArray<DraftComposerAttachment>,
+): void {
+  if (!attachments.some((attachment) => attachment.type === "file")) {
+    return;
+  }
+  void releaseUnusedComposerAttachmentFiles(attachments).catch((error) => {
+    console.warn("[composer-attachments] could not remove unused files", error);
+  });
+}
+
 function schedulePersistComposerDrafts(drafts: Record<string, ComposerDraft>): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
@@ -334,6 +379,7 @@ export function replaceComposerDraftAttachments(
   draftKey: string,
   attachments: ReadonlyArray<DraftComposerAttachment>,
 ): void {
+  const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => {
     const draft = {
       ...normalizeDraft(current[draftKey]),
@@ -349,9 +395,14 @@ export function replaceComposerDraftAttachments(
       [draftKey]: draft,
     };
   });
+  const retainedIds = new Set(attachments.map((attachment) => attachment.id));
+  scheduleUnusedComposerAttachmentCleanup(
+    previousAttachments.filter((attachment) => !retainedIds.has(attachment.id)),
+  );
 }
 
 export function removeComposerDraftAttachment(draftKey: string, imageId: string): void {
+  const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => {
     const existing = normalizeDraft(current[draftKey]);
     const draft = {
@@ -368,6 +419,9 @@ export function removeComposerDraftAttachment(draftKey: string, imageId: string)
       [draftKey]: draft,
     };
   });
+  scheduleUnusedComposerAttachmentCleanup(
+    previousAttachments.filter((attachment) => attachment.id === imageId),
+  );
 }
 
 export function updateComposerDraftSettings(
@@ -572,6 +626,12 @@ export async function mergeComposerDraftContent(
     appAtomRegistry.set(composerDraftsAtom, next);
   }
   await persistenceQueue.run(() => writePersistedComposerDrafts(next));
+  scheduleUnusedComposerAttachmentCleanup(
+    content.attachments.filter(
+      (attachment) =>
+        !currentAttachmentIds.has(attachment.id) && !nextAttachmentIds.has(attachment.id),
+    ),
+  );
   return { skippedAttachmentCount };
 }
 
@@ -601,10 +661,13 @@ export function clearComposerDraftContent(
   draftKey: string,
   options?: { readonly clearWorkspaceSelection?: boolean },
 ): void {
+  const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => clearComposerDraftContentState(current, draftKey, options));
+  scheduleUnusedComposerAttachmentCleanup(previousAttachments);
 }
 
 export function clearComposerDraft(draftKey: string): void {
+  const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => {
     if (!current[draftKey]) {
       return current;
@@ -613,6 +676,7 @@ export function clearComposerDraft(draftKey: string): void {
     delete next[draftKey];
     return next;
   });
+  scheduleUnusedComposerAttachmentCleanup(previousAttachments);
 }
 
 export function removeComposerDraftsForEnvironment(
@@ -635,10 +699,11 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
     await loadPromise;
   }
 
-  const next = removeComposerDraftsForEnvironment(
-    appAtomRegistry.get(composerDraftsAtom),
-    environmentId,
-  );
+  const current = appAtomRegistry.get(composerDraftsAtom);
+  const next = removeComposerDraftsForEnvironment(current, environmentId);
+  const removedAttachments = Object.entries(current)
+    .filter(([draftKey]) => next[draftKey] === undefined)
+    .flatMap(([, draft]) => draft.attachments);
 
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
@@ -646,6 +711,7 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
   }
   appAtomRegistry.set(composerDraftsAtom, next);
   await persistenceQueue.run(() => writePersistedComposerDrafts(next));
+  await releaseUnusedComposerAttachmentFiles(removedAttachments);
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {

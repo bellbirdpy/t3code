@@ -28,7 +28,6 @@ import {
   pasteComposerClipboard,
   pickComposerFiles,
   pickComposerImages,
-  removePersistedComposerAttachmentFile,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -385,13 +384,7 @@ export function useThreadComposerState() {
       }
 
       const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
-      const removedAttachment = getComposerDraftSnapshot(threadKey).attachments.find(
-        (attachment) => attachment.id === imageId,
-      );
       removeComposerDraftAttachment(threadKey, imageId);
-      if (removedAttachment?.type === "file") {
-        void removePersistedComposerAttachmentFile(removedAttachment.fileUri);
-      }
     },
     [selectedThreadShell],
   );

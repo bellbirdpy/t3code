@@ -54,6 +54,7 @@ import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftId,
+  type PersistedComposerFileAttachment,
   type PersistedComposerImageAttachment,
   hydrateImagesFromPersisted,
   useComposerDraftStore,
@@ -80,6 +81,7 @@ import {
   prepareImageForAttachment,
 } from "../../lib/imageCompression";
 import {
+  readAttachmentUpload,
   releaseAttachmentUpload,
   retryAttachmentUpload,
   startAttachmentUpload,
@@ -2178,9 +2180,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Prompt stash (⌘S)
   // ------------------------------------------------------------------
-  // One global queue. Stashed prompts carry only text + images so they can be
-  // restored into any thread or provider — stash, switch, restore is the
-  // whole point.
+  // Files remain tied to the environment that owns their uploaded bytes.
   const stashQueue = usePromptStashStore((state) => state.entries);
   const stashEntryToQueue = usePromptStashStore((state) => state.stashEntry);
   const takeStashEntry = usePromptStashStore((state) => state.takeEntry);
@@ -2209,6 +2209,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const restoreStashEntry = useCallback(
     (entry: PromptStashEntry) => {
+      const stashedFiles = entry.files ?? [];
+      if (stashedFiles.some((file) => file.environmentId !== environmentId)) {
+        toastManager.add({
+          type: "error",
+          title: "Stashed files belong to another environment",
+          description: "Restore this prompt in the environment that received its files.",
+        });
+        return;
+      }
       // Remove first so a double activation (click + Enter) can't restore twice.
       const { entry: taken, durable } = takeStashEntry(entry.id);
       if (!taken) return;
@@ -2240,6 +2249,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setComposerTrigger(null);
       }
 
+      let unrestoredFileNames: string[] = [];
+      let restoredFileCount = 0;
+      if (stashedFiles.length > 0) {
+        const existingFileIds = new Set(composerFilesRef.current.map((file) => file.id));
+        const filesToRestore = stashedFiles.filter((file) => !existingFileIds.has(file.id));
+        const capacity = Math.max(
+          0,
+          PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
+            composerImagesRef.current.length -
+            composerFilesRef.current.length,
+        );
+        const restoredFiles = filesToRestore.slice(0, capacity).map((file) => ({
+          type: "file" as const,
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          file: null,
+          uploadedAttachmentId: file.attachmentId,
+          uploadEnvironmentId: environmentId,
+        }));
+        const skippedFiles = filesToRestore.slice(capacity);
+        unrestoredFileNames = skippedFiles.map((file) => file.name);
+        for (const file of skippedFiles) {
+          releaseAttachmentUpload(file.id);
+        }
+        if (restoredFiles.length > 0) {
+          addComposerDraftFiles(composerDraftTarget, restoredFiles);
+          restoredFileCount = restoredFiles.length;
+        }
+      }
+
       let unrestoredImageNames: string[] = [];
       if (entry.attachments.length > 0) {
         const existingIds = new Set(composerImagesRef.current.map((image) => image.id));
@@ -2256,7 +2297,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           0,
           PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
             composerImagesRef.current.length -
-            composerFilesRef.current.length,
+            composerFilesRef.current.length -
+            restoredFileCount,
         );
         const pending = entry.attachments.filter(
           (attachment) =>
@@ -2295,13 +2337,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       if (unrestoredImageNames.length > 0) {
         missingImageReasons.push(
-          `${unrestoredImageNames.join(", ")} could not be restored: the composer is at its ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}-image limit.`,
+          `${unrestoredImageNames.join(", ")} could not be restored: the composer is at its ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}-attachment limit.`,
+        );
+      }
+      if (unrestoredFileNames.length > 0) {
+        missingImageReasons.push(
+          `${unrestoredFileNames.join(", ")} could not be restored: the composer is at its ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}-attachment limit.`,
         );
       }
       if (missingImageReasons.length > 0) {
         toastManager.add({
           type: "warning",
-          title: "Some images were not restored",
+          title: "Some attachments were not restored",
           description: missingImageReasons.join(" "),
         });
       }
@@ -2315,9 +2362,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
     },
     [
+      addComposerDraftFiles,
       addComposerDraftImages,
       composerDraftTarget,
+      composerFilesRef,
       composerImagesRef,
+      environmentId,
       promptRef,
       setComposerDraftPrompt,
       takeStashEntry,
@@ -2326,7 +2376,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const deleteStashEntry = useCallback(
     (entry: PromptStashEntry) => {
-      const { durable } = takeStashEntry(entry.id);
+      const { entry: removed, durable } = takeStashEntry(entry.id);
+      if (durable && removed) {
+        for (const file of removed.files ?? []) {
+          releaseAttachmentUpload(file.id);
+        }
+      }
       if (!durable) {
         toastManager.add({
           type: "warning",
@@ -2345,9 +2400,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // round-trip, so they are stripped from the stashed prompt.
     const prompt = promptRef.current.split(INLINE_TERMINAL_CONTEXT_PLACEHOLDER).join("").trim();
     const images = [...composerImagesRef.current];
-    if (prompt.length === 0 && images.length === 0) {
+    const files = [...composerFilesRef.current];
+    if (prompt.length === 0 && images.length === 0 && files.length === 0) {
       setIsStashMenuOpen((open) => !open);
       return;
+    }
+    const stashedFiles: PersistedComposerFileAttachment[] = [];
+    for (const file of files) {
+      const upload = readAttachmentUpload(file.id);
+      if (upload?.status !== "ready" || upload.environmentId !== environmentId) {
+        toastManager.add({
+          type: "error",
+          title: "Wait for file uploads before stashing this prompt",
+        });
+        return;
+      }
+      stashedFiles.push({
+        id: file.id,
+        name: file.name,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        attachmentId: upload.attachmentId,
+        environmentId,
+      });
     }
     // A repeat ⌘S on the *same* still-unencoded snapshot would stash it
     // twice. Guard on the snapshot itself rather than a bare boolean: once
@@ -2373,6 +2448,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         createdAt: new Date().toISOString(),
         prompt,
         attachments: [],
+        ...(stashedFiles.length > 0 ? { files: stashedFiles } : {}),
         droppedImageNames: [],
         unreadableImageNames: [],
         pendingImageCount: images.length,
@@ -2405,9 +2481,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
       }
 
-      // Only the prompt and images are cleared — terminal/element contexts,
-      // preview annotations, and review comments are not stashable, so
-      // destroying them here would be unrecoverable.
+      // Terminal and preview context stays behind because the stash cannot restore it.
       promptRef.current = "";
       clearComposerDraftPromptAndImages(stashTarget);
       for (const image of images) {
@@ -2418,6 +2492,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       pulseStashBadge();
 
       if (evicted) {
+        for (const file of evicted.files ?? []) {
+          releaseAttachmentUpload(file.id);
+        }
         toastManager.add({
           type: "warning",
           title: "Oldest stashed prompt discarded",
@@ -2493,7 +2570,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     clearComposerDraftPromptAndImages,
     composerDraftTarget,
+    composerFilesRef,
     composerImagesRef,
+    environmentId,
     finalizeStashEntryImages,
     promptRef,
     pulseStashBadge,
@@ -2679,7 +2758,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           error = "This server does not support file attachments.";
           continue;
         }
-        if (file.size <= 0 || file.size > maxFileAttachmentBytes) {
+        if (file.size <= 0) {
+          error = `'${file.name}' is empty or could not be read.`;
+          continue;
+        }
+        if (file.size > maxFileAttachmentBytes) {
           error = `'${file.name}' exceeds the ${Math.round(maxFileAttachmentBytes / (1024 * 1024))} MB attachment limit.`;
           continue;
         }

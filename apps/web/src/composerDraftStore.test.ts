@@ -365,6 +365,16 @@ describe("composerDraftStore file attachments", () => {
 
     expect(store.getComposerDraft(threadRef)).toBeNull();
   });
+
+  it("removes generic files when a prompt is moved into the stash", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Review the report");
+    store.addFiles(threadRef, [makeFile("file-stash")]);
+
+    store.clearComposerPromptAndImages(threadRef);
+
+    expect(store.getComposerDraft(threadRef)).toBeNull();
+  });
 });
 
 describe("composerDraftStore moveComposerPromptAndImages", () => {
@@ -411,6 +421,49 @@ describe("composerDraftStore moveComposerPromptAndImages", () => {
     expect(source?.terminalContexts.map((context) => context.id)).toEqual(["ctx-stay"]);
     expect(source?.prompt).toBe(INLINE_TERMINAL_CONTEXT_PLACEHOLDER);
     expect(draftByKey(destinationDraftId)?.prompt).toBe(" explain this error");
+  });
+
+  it("keeps hydrated file references on their original environment", () => {
+    const sourceRef = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("thread-file-source"));
+    const destinationRef = scopeThreadRef(
+      OTHER_TEST_ENVIRONMENT_ID,
+      ThreadId.make("thread-file-destination"),
+    );
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(sourceRef, "review the report");
+    store.addFiles(sourceRef, [
+      {
+        ...makeFile("file-hydrated"),
+        file: null,
+        uploadedAttachmentId: "pending-report-pdf",
+        uploadEnvironmentId: TEST_ENVIRONMENT_ID,
+      },
+    ]);
+
+    store.moveComposerPromptAndImages(sourceRef, destinationRef);
+
+    expect(store.getComposerDraft(sourceRef)?.files.map((file) => file.id)).toEqual([
+      "file-hydrated",
+    ]);
+    expect(store.getComposerDraft(destinationRef)?.files).toEqual([]);
+    expect(store.getComposerDraft(destinationRef)?.prompt).toBe("review the report");
+  });
+
+  it("moves files across environments when the original browser file remains available", () => {
+    const sourceRef = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("thread-file-source"));
+    const destinationRef = scopeThreadRef(
+      OTHER_TEST_ENVIRONMENT_ID,
+      ThreadId.make("thread-file-destination"),
+    );
+    const store = useComposerDraftStore.getState();
+    store.addFiles(sourceRef, [makeFile("file-local")]);
+
+    store.moveComposerPromptAndImages(sourceRef, destinationRef);
+
+    expect(store.getComposerDraft(sourceRef)).toBeNull();
+    expect(store.getComposerDraft(destinationRef)?.files.map((file) => file.id)).toEqual([
+      "file-local",
+    ]);
   });
 
   it("is a no-op when source and destination are the same target", () => {

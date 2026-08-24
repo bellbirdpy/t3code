@@ -18,7 +18,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
 import { deletePendingMobileAttachments, uploadMobileAttachments } from "../lib/attachmentUpload";
-import { removePersistedComposerAttachmentFile } from "../lib/composerImages";
 import { randomHex } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useThreadShells } from "./entities";
@@ -39,6 +38,7 @@ import {
   type ThreadOutboxCommandStage,
 } from "./thread-outbox-model";
 import { threadEnvironment } from "./threads";
+import { releaseUnusedComposerAttachmentFiles } from "./use-composer-drafts";
 import { useAtomCommand } from "./use-atom-command";
 import {
   editingQueuedMessageIdsAtom,
@@ -152,11 +152,7 @@ export function useThreadOutboxDrain(): void {
 
       try {
         await removeThreadOutboxMessage(queuedMessage);
-        await Promise.all(
-          queuedMessage.attachments
-            .filter((attachment) => attachment.type === "file")
-            .map((attachment) => removePersistedComposerAttachmentFile(attachment.fileUri)),
-        );
+        await releaseUnusedComposerAttachmentFiles(queuedMessage.attachments);
         return true;
       } catch (error) {
         console.warn("[thread-outbox] failed to remove delivered queued message", {

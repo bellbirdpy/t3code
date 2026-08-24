@@ -44,7 +44,9 @@ const lastPendingSweepByDirectory = new Map<string, number>();
 const AttachmentUploadClaims = Schema.Struct({
   version: Schema.Literal(1),
   kind: Schema.Literal("attachment-upload"),
-  type: Schema.Literals(["image", "file"]),
+  type: Schema.Literals(["image", "file"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("image" as const)),
+  ),
   attachmentId: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,

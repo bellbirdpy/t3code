@@ -6,10 +6,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import { parseThreadSegmentFromAttachmentId } from "../attachmentStore.ts";
 import {
@@ -30,6 +32,19 @@ const uploadInput = {
   mimeType: "image/png",
   sizeBytes: 6,
 } as const;
+
+const LegacyAttachmentUploadClaims = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("attachment-upload"),
+  attachmentId: Schema.String,
+  name: Schema.String,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Number,
+  expiresAt: Schema.Number,
+});
+const encodeLegacyAttachmentUploadClaims = Schema.encodeEffect(
+  Schema.fromJsonString(LegacyAttachmentUploadClaims),
+);
 
 describe("AttachmentUpload", () => {
   it.effect("signs the attachment metadata and validates the upload token", () =>
@@ -57,6 +72,31 @@ describe("AttachmentUpload", () => {
       expect(yield* validateAttachmentUploadToken(`${payload}x.${signature}`)).toBeNull();
       expect(yield* validateAttachmentUploadToken(`${token}.extra`)).toBeNull();
       expect(yield* validateAttachmentUploadToken("garbage")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("accepts unexpired image upload tokens issued before file support", () =>
+    Effect.gen(function* () {
+      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const secretStore = yield* ServerSecretStore.ServerSecretStore;
+      const secret = yield* secretStore.getOrCreateRandom("asset-access-signing-key", 32);
+      const encodedPayload = base64UrlEncode(
+        yield* encodeLegacyAttachmentUploadClaims({
+          version: 1,
+          kind: "attachment-upload",
+          attachmentId: issued.attachmentId,
+          name: uploadInput.name,
+          mimeType: uploadInput.mimeType,
+          sizeBytes: uploadInput.sizeBytes,
+          expiresAt: issued.expiresAt,
+        }),
+      );
+      const legacyToken = `${encodedPayload}.${signPayload(encodedPayload, secret)}`;
+
+      expect(yield* validateAttachmentUploadToken(legacyToken)).toMatchObject({
+        type: "image",
+        attachmentId: issued.attachmentId,
+      });
     }).pipe(Effect.provide(testLayer)),
   );
 

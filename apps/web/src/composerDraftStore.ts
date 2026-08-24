@@ -104,7 +104,7 @@ export interface ComposerFileAttachment extends Omit<ChatFileAttachment, "previe
   uploadEnvironmentId?: EnvironmentId;
 }
 
-const PersistedComposerFileAttachment = Schema.Struct({
+export const PersistedComposerFileAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
@@ -112,7 +112,7 @@ const PersistedComposerFileAttachment = Schema.Struct({
   attachmentId: Schema.String,
   environmentId: Schema.String,
 });
-type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
+export type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
 const isPersistedComposerFileAttachment = Schema.is(PersistedComposerFileAttachment);
 
 const PersistedTerminalContextDraft = Schema.Struct({
@@ -556,14 +556,13 @@ interface ComposerDraftStoreState {
   ) => void;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
   /**
-   * Clears only the prompt text and image attachments, preserving terminal /
+   * Clears the prompt text and attachments, preserving terminal /
    * element contexts, preview annotations, and review comments. Used by the
-   * prompt stash, which can only round-trip text + images: clearing the
-   * session-bound contexts would destroy state nothing can restore.
+   * prompt stash. Session-bound context stays in the source draft.
    */
   clearComposerPromptAndImages: (threadRef: ComposerThreadTarget) => void;
   /**
-   * Moves the prompt text and image attachments from one composer target to
+   * Moves the prompt text and attachments from one composer target to
    * another. Used when a draft changes project: the new project gets its own
    * draft session and the typed content follows it. Session-bound extras
    * (terminal / element contexts, preview annotations, review comments) stay
@@ -3640,6 +3639,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...current,
               prompt: ensureInlineTerminalContextPlaceholders("", current.terminalContexts.length),
               images: [],
+              files: [],
               nonPersistedImageIds: [],
               persistedAttachments: [],
             };
@@ -3664,6 +3664,16 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const destination = state.draftsByThreadKey[toKey] ?? createEmptyThreadDraft();
+            const destinationEnvironmentId =
+              typeof to === "string"
+                ? (state.draftThreadsByThreadKey[toKey]?.environmentId ??
+                  parseScopedThreadKey(toKey)?.environmentId ??
+                  null)
+                : to.environmentId;
+            const transferableFiles = source.files.filter(
+              (file) => file.file !== null || file.uploadEnvironmentId === destinationEnvironmentId,
+            );
+            const retainedFiles = source.files.filter((file) => !transferableFiles.includes(file));
             // Inline placeholders reference the source's terminal contexts,
             // which stay behind; re-anchor the moved prompt to whatever
             // contexts the destination already holds.
@@ -3675,7 +3685,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...destination,
               prompt: movedPrompt,
               images: [...destination.images, ...source.images],
-              files: [...destination.files, ...source.files],
+              files: [...destination.files, ...transferableFiles],
               nonPersistedImageIds: [
                 ...destination.nonPersistedImageIds,
                 ...source.nonPersistedImageIds,
@@ -3692,7 +3702,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...source,
               prompt: ensureInlineTerminalContextPlaceholders("", source.terminalContexts.length),
               images: [],
-              files: [],
+              files: retainedFiles,
               nonPersistedImageIds: [],
               persistedAttachments: [],
             };

@@ -178,7 +178,11 @@ export async function buildIncomingShareDraft(input: {
       }
       try {
         const sizeBytes = resolved?.contentSize ?? (await input.fileReader.readSize?.(uri)) ?? 0;
-        if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+        if (sizeBytes <= 0) {
+          warnings.push(`'${name}' is empty or could not be read.`);
+          continue;
+        }
+        if (sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
           warnings.push(`'${name}' exceeds the 50 MB attachment limit.`);
           continue;
         }

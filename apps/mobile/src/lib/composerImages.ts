@@ -101,9 +101,18 @@ export async function pickComposerFiles(input: {
   const maxBytes = input.maxBytes ?? PROVIDER_SEND_TURN_MAX_FILE_BYTES;
   const attachments: DraftComposerFileAttachment[] = [];
   let error: string | null = null;
-  for (const file of result.result.slice(0, remainingSlots)) {
+  let exceededAttachmentLimit = false;
+  for (const file of result.result) {
+    if (attachments.length >= remainingSlots) {
+      exceededAttachmentLimit = true;
+      break;
+    }
     const sizeBytes = file.size ?? 0;
-    if (sizeBytes <= 0 || sizeBytes > maxBytes) {
+    if (sizeBytes <= 0) {
+      error = `'${file.name}' is empty or could not be read.`;
+      continue;
+    }
+    if (sizeBytes > maxBytes) {
       error = `'${file.name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`;
       continue;
     }
@@ -120,7 +129,7 @@ export async function pickComposerFiles(input: {
       error = `Could not read '${file.name}'.`;
     }
   }
-  if (result.result.length > remainingSlots) {
+  if (exceededAttachmentLimit) {
     error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
   }
   return { files: attachments, error };

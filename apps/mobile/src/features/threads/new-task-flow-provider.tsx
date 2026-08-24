@@ -27,10 +27,7 @@ import { pipe } from "effect/Function";
 
 import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
-import {
-  removePersistedComposerAttachmentFile,
-  type DraftComposerAttachment,
-} from "../../lib/composerImages";
+import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import {
   buildModelOptions,
@@ -48,6 +45,7 @@ import {
   copyComposerDraftContentIfEmpty,
   getComposerDraftSnapshot,
   isComposerDraftEmpty,
+  releaseUnusedComposerAttachmentFiles,
   removeComposerDraftAttachment,
   replaceComposerDraftAttachments,
   setComposerDraftText,
@@ -522,13 +520,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!selectedProjectDraftKey) {
         return;
       }
-      const removedAttachment = getComposerDraftSnapshot(selectedProjectDraftKey).attachments.find(
-        (attachment) => attachment.id === imageId,
-      );
       removeComposerDraftAttachment(selectedProjectDraftKey, imageId);
-      if (removedAttachment?.type === "file") {
-        void removePersistedComposerAttachmentFile(removedAttachment.fileUri);
-      }
     },
     [selectedProjectDraftKey],
   );
@@ -925,6 +917,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       }
       clearComposerDraft(pendingTaskDraftKey(editing.messageId));
       releaseEditingQueuedMessage(editing.messageId);
+      void releaseUnusedComposerAttachmentFiles(editing.attachments);
     }
     setEditingPendingTask(null);
   }, []);
@@ -988,6 +981,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           }
           clearComposerDraft(pendingTaskDraftKey(editing.messageId));
           releaseEditingQueuedMessage(editing.messageId);
+          void releaseUnusedComposerAttachmentFiles(editing.attachments);
         })
         .catch((error) => {
           // Keep the drain lock and the draft: delivering the stale payload

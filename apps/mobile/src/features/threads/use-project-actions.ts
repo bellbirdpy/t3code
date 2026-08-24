@@ -14,10 +14,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../../state/threads";
-import {
-  removePersistedComposerAttachmentFile,
-  type DraftComposerAttachment,
-} from "../../lib/composerImages";
+import type { DraftComposerAttachment } from "../../lib/composerImages";
 import {
   deletePendingMobileAttachments,
   uploadMobileAttachments,
@@ -26,6 +23,7 @@ import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/com
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { randomHex } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { releaseUnusedComposerAttachmentFiles } from "../../state/use-composer-drafts";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { validateProjectThreadCreation } from "./projectThreadCreationValidation";
 
@@ -109,11 +107,7 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(result.cause);
       }
       setPendingConnectionError(null);
-      await Promise.all(
-        input.initialAttachments
-          .filter((attachment) => attachment.type === "file")
-          .map((attachment) => removePersistedComposerAttachmentFile(attachment.fileUri)),
-      );
+      await releaseUnusedComposerAttachmentFiles(input.initialAttachments);
 
       return mapAtomCommandResult(result, () =>
         scopeThreadRef(input.project.environmentId, threadId),
