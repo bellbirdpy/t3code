@@ -263,7 +263,7 @@ export async function releaseUnusedComposerAttachmentFiles(
   }
 }
 
-function scheduleUnusedComposerAttachmentCleanup(
+export function scheduleUnusedComposerAttachmentCleanup(
   attachments: ReadonlyArray<DraftComposerAttachment>,
 ): void {
   if (!attachments.some((attachment) => attachment.type === "file")) {

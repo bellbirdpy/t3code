@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ThreadId,
   type ModelSelection,
   type ProviderOptionSelection,
@@ -374,6 +375,53 @@ describe("composerDraftStore file attachments", () => {
     store.clearComposerPromptAndImages(threadRef);
 
     expect(store.getComposerDraft(threadRef)).toBeNull();
+  });
+
+  it("enforces the combined file and image limit across separate updates", () => {
+    const store = useComposerDraftStore.getState();
+    const images = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) =>
+      makeImage({
+        id: `image-${index}`,
+        name: `image-${index}.png`,
+        previewUrl: `blob:image-${index}`,
+      }),
+    );
+    store.addImages(threadRef, images);
+    store.addFiles(threadRef, [
+      makeFile("file-accepted"),
+      { ...makeFile("file-overflow"), name: "other.pdf" },
+    ]);
+    store.addImages(threadRef, [
+      makeImage({ id: "image-overflow", name: "overflow.png", previewUrl: "blob:overflow" }),
+    ]);
+
+    const draft = store.getComposerDraft(threadRef);
+    expect(draft?.images).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1);
+    expect(draft?.files.map((file) => file.id)).toEqual(["file-accepted"]);
+  });
+
+  it("keeps the remaining file slot available after a duplicate is skipped", () => {
+    const store = useComposerDraftStore.getState();
+    store.addImages(
+      threadRef,
+      Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 2 }, (_, index) =>
+        makeImage({
+          id: `image-${index}`,
+          name: `image-${index}.png`,
+          previewUrl: `blob:image-${index}`,
+        }),
+      ),
+    );
+    store.addFiles(threadRef, [makeFile("file-original")]);
+    store.addFiles(threadRef, [
+      makeFile("file-duplicate"),
+      { ...makeFile("file-unique"), name: "unique.pdf" },
+    ]);
+
+    expect(store.getComposerDraft(threadRef)?.files.map((file) => file.id)).toEqual([
+      "file-original",
+      "file-unique",
+    ]);
   });
 });
 

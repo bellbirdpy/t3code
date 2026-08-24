@@ -45,9 +45,9 @@ import {
   copyComposerDraftContentIfEmpty,
   getComposerDraftSnapshot,
   isComposerDraftEmpty,
-  releaseUnusedComposerAttachmentFiles,
   removeComposerDraftAttachment,
   replaceComposerDraftAttachments,
+  scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
   updateComposerDraftSettings,
   useComposerDraft,
@@ -917,7 +917,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       }
       clearComposerDraft(pendingTaskDraftKey(editing.messageId));
       releaseEditingQueuedMessage(editing.messageId);
-      void releaseUnusedComposerAttachmentFiles(editing.attachments);
+      scheduleUnusedComposerAttachmentCleanup(editing.attachments);
     }
     setEditingPendingTask(null);
   }, []);
@@ -981,7 +981,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           }
           clearComposerDraft(pendingTaskDraftKey(editing.messageId));
           releaseEditingQueuedMessage(editing.messageId);
-          void releaseUnusedComposerAttachmentFiles(editing.attachments);
+          scheduleUnusedComposerAttachmentCleanup(editing.attachments);
         })
         .catch((error) => {
           // Keep the drain lock and the draft: delivering the stale payload

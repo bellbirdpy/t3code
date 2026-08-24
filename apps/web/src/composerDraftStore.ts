@@ -9,6 +9,7 @@ import {
   ProviderInteractionMode,
   ProviderDriverKind,
   ProviderOptionSelection,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PreviewAnnotationPayloadSchema,
   type PreviewAnnotationPayload,
   RuntimeMode,
@@ -3059,6 +3060,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 }
                 continue;
               }
+              if (
+                existing.images.length + existing.files.length + dedupedIncoming.length >=
+                PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+              ) {
+                if (!acceptedPreviewUrls.has(image.previewUrl)) {
+                  revokeObjectPreviewUrl(image.previewUrl);
+                }
+                continue;
+              }
               dedupedIncoming.push(image);
               existingIds.add(image.id);
               existingDedupKeys.add(dedupKey);
@@ -3131,6 +3141,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const key = `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`;
               if (knownIds.has(file.id) || knownFiles.has(key)) {
                 continue;
+              }
+              if (
+                existing.images.length + existing.files.length + accepted.length >=
+                PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+              ) {
+                break;
               }
               accepted.push(file);
               knownIds.add(file.id);

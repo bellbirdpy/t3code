@@ -23,7 +23,7 @@ import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/com
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { randomHex } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { releaseUnusedComposerAttachmentFiles } from "../../state/use-composer-drafts";
+import { scheduleUnusedComposerAttachmentCleanup } from "../../state/use-composer-drafts";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { validateProjectThreadCreation } from "./projectThreadCreationValidation";
 
@@ -107,7 +107,7 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(result.cause);
       }
       setPendingConnectionError(null);
-      await releaseUnusedComposerAttachmentFiles(input.initialAttachments);
+      scheduleUnusedComposerAttachmentCleanup(input.initialAttachments);
 
       return mapAtomCommandResult(result, () =>
         scopeThreadRef(input.project.environmentId, threadId),

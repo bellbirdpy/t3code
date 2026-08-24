@@ -2253,7 +2253,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       let restoredFileCount = 0;
       if (stashedFiles.length > 0) {
         const existingFileIds = new Set(composerFilesRef.current.map((file) => file.id));
-        const filesToRestore = stashedFiles.filter((file) => !existingFileIds.has(file.id));
+        const existingFileKeys = new Set(
+          composerFilesRef.current.map(
+            (file) => `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`,
+          ),
+        );
+        const filesToRestore = stashedFiles.filter((file) => {
+          const key = `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`;
+          if (existingFileIds.has(file.id) || existingFileKeys.has(key)) {
+            return false;
+          }
+          existingFileIds.add(file.id);
+          existingFileKeys.add(key);
+          return true;
+        });
         const capacity = Math.max(
           0,
           PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
