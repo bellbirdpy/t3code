@@ -3582,7 +3582,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               >
                                 <RotateCcwIcon />
                               </TooltipTrigger>
-                              <TooltipPopup side="top">{upload.reason}</TooltipPopup>
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                {upload.reason}
+                              </TooltipPopup>
                             </Tooltip>
                           ) : null}
                           <Button
