@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -105,6 +106,55 @@ describe("AttachmentUpload", () => {
       expect(
         NodeFS.readdirSync(config.attachmentsDir).filter((entry) => entry.endsWith(".part")),
       ).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("streams generic files to a path with their original extension", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const issued = yield* issueAttachmentUploadUrl({
+        type: "file",
+        name: "report.PDF",
+        mimeType: "application/pdf",
+        sizeBytes: 6,
+      });
+      const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
+      const claims = yield* validateAttachmentUploadToken(token);
+      if (!claims) {
+        throw new Error("Expected valid upload claims.");
+      }
+
+      expect(
+        yield* storeAttachmentUpload(
+          claims,
+          Stream.make(new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])),
+        ),
+      ).toEqual({ ok: true });
+      expect(issued.attachmentId).toMatch(/-pdf$/);
+      expect(
+        NodeFS.readFileSync(NodePath.join(config.attachmentsDir, `${issued.attachmentId}.pdf`)),
+      ).toEqual(Buffer.from([1, 2, 3, 4, 5, 6]));
+
+      yield* deletePendingAttachment(issued.attachmentId);
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("removes partial streamed uploads that exceed their signed size", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
+      const claims = yield* validateAttachmentUploadToken(token);
+      if (!claims) {
+        throw new Error("Expected valid upload claims.");
+      }
+
+      expect(yield* storeAttachmentUpload(claims, Stream.make(new Uint8Array(7)))).toMatchObject({
+        ok: false,
+        status: 400,
+      });
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
     }).pipe(Effect.provide(testLayer)),
   );
 

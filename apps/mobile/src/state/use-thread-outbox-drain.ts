@@ -17,7 +17,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { toUploadChatImageAttachments } from "../lib/composerImages";
+import { deletePendingMobileAttachments, uploadMobileAttachments } from "../lib/attachmentUpload";
+import { removePersistedComposerAttachmentFile } from "../lib/composerImages";
 import { randomHex } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useThreadShells } from "./entities";
@@ -151,6 +152,11 @@ export function useThreadOutboxDrain(): void {
 
       try {
         await removeThreadOutboxMessage(queuedMessage);
+        await Promise.all(
+          queuedMessage.attachments
+            .filter((attachment) => attachment.type === "file")
+            .map((attachment) => removePersistedComposerAttachmentFile(attachment.fileUri)),
+        );
         return true;
       } catch (error) {
         console.warn("[thread-outbox] failed to remove delivered queued message", {
@@ -217,6 +223,16 @@ export function useThreadOutboxDrain(): void {
         }
       }
 
+      let uploaded: Awaited<ReturnType<typeof uploadMobileAttachments>>;
+      try {
+        uploaded = await uploadMobileAttachments({
+          environmentId: queuedMessage.environmentId,
+          attachments: queuedMessage.attachments,
+        });
+      } catch (error) {
+        console.warn("[thread-outbox] failed to upload attachments", error);
+        return false;
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -226,7 +242,7 @@ export function useThreadOutboxDrain(): void {
             messageId: queuedMessage.messageId,
             role: "user",
             text: queuedMessage.text,
-            attachments: toUploadChatImageAttachments(queuedMessage.attachments),
+            attachments: uploaded.attachments,
           },
           modelSelection: settings.modelSelection,
           runtimeMode: settings.runtimeMode,
@@ -234,6 +250,10 @@ export function useThreadOutboxDrain(): void {
           createdAt: queuedMessage.createdAt,
         },
       });
+      await deletePendingMobileAttachments(
+        queuedMessage.environmentId,
+        uploaded.pendingAttachmentIds,
+      );
       return completeDelivery(deliveryResult);
     },
     [
@@ -256,6 +276,16 @@ export function useThreadOutboxDrain(): void {
         return false;
       }
       const { completeDelivery } = makeDeliveryHelpers(queuedMessage);
+      let uploaded: Awaited<ReturnType<typeof uploadMobileAttachments>>;
+      try {
+        uploaded = await uploadMobileAttachments({
+          environmentId: queuedMessage.environmentId,
+          attachments: queuedMessage.attachments,
+        });
+      } catch (error) {
+        console.warn("[thread-outbox] failed to upload attachments", error);
+        return false;
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
@@ -267,6 +297,7 @@ export function useThreadOutboxDrain(): void {
           createdAt: queuedMessage.createdAt,
           text: queuedMessage.text.trim(),
           attachments: queuedMessage.attachments,
+          uploadedAttachments: uploaded.attachments,
           modelSelection,
           runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,
           interactionMode: queuedMessage.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -277,6 +308,10 @@ export function useThreadOutboxDrain(): void {
           worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
+      await deletePendingMobileAttachments(
+        queuedMessage.environmentId,
+        uploaded.pendingAttachmentIds,
+      );
       return completeDelivery(deliveryResult);
     },
     [makeDeliveryHelpers, startTurn],

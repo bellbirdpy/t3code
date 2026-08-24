@@ -55,4 +55,12 @@ describe("assetResponseHeaders", () => {
       "text/html; charset=utf-8",
     );
   });
+
+  it("downloads uploaded documents without executing their content", () => {
+    expect(assetResponseHeaders("/attachments/upload.html", { download: true })).toMatchObject({
+      "Content-Disposition": "attachment",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Content-Type": "application/octet-stream",
+    });
+  });
 });

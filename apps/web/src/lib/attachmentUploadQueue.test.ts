@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { ComposerImageAttachment } from "../composerDraftStore";
+import type { ComposerFileAttachment, ComposerImageAttachment } from "../composerDraftStore";
 
 const mocks = vi.hoisted(() => ({
   createUploadUrl: Symbol("create-upload-url"),
@@ -110,6 +110,20 @@ function makeImage(id: string): ComposerImageAttachment {
   };
 }
 
+function makeFile(id: string): ComposerFileAttachment {
+  const file = new File([new Uint8Array([1, 2, 3])], `${id}.pdf`, {
+    type: "application/pdf",
+  });
+  return {
+    type: "file",
+    id,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    file,
+  };
+}
+
 describe("attachmentUploadQueue", () => {
   beforeEach(() => {
     TestXmlHttpRequest.requests = [];
@@ -187,6 +201,59 @@ describe("attachmentUploadQueue", () => {
       },
       expect.anything(),
     );
+  });
+
+  it("uploads generic files and sends file attachment references", async () => {
+    const file = makeFile("report");
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    await Promise.resolve();
+
+    expect(mocks.runAtomCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      mocks.createUploadUrl,
+      {
+        environmentId: firstEnvironment,
+        input: {
+          type: "file",
+          name: "report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 3,
+        },
+      },
+      expect.anything(),
+    );
+
+    const settled = awaitAttachmentUploads([file.id]);
+    TestXmlHttpRequest.requests[0]!.complete();
+    await settled;
+
+    expect(getUploadedAttachments({ environmentId: firstEnvironment, images: [file] })).toEqual([
+      {
+        type: "file",
+        id: "pending-environment-1-report.pdf",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 3,
+      },
+    ]);
+  });
+
+  it("restores an uploaded file reference without reading its original bytes", () => {
+    const file: ComposerFileAttachment = {
+      ...makeFile("restored"),
+      file: null,
+      uploadedAttachmentId: "pending-restored-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+
+    expect(readAttachmentUpload(file.id)).toEqual({
+      status: "ready",
+      environmentId: firstEnvironment,
+      attachmentId: "pending-restored-pdf",
+    });
+    expect(TestXmlHttpRequest.requests).toHaveLength(0);
   });
 
   it("retries rejected uploads", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { ResolvedSharePayload, SharePayload } from "expo-sharing";
@@ -94,6 +95,84 @@ describe("incoming native shares", () => {
     expect(readBase64).not.toHaveBeenCalled();
     expect(removeOwnedFile).toHaveBeenCalledWith(image.value);
     expect(hasIncomingShareContent(result)).toBe(false);
+  });
+
+  it("keeps a shared PDF on disk without converting its contents to base64", async () => {
+    const file: SharePayload = {
+      shareType: "file",
+      value: "file:///shared/report.pdf",
+      mimeType: "application/pdf",
+    };
+    const readBase64 = vi.fn(async () => "unused");
+    const persistFile = vi.fn(async () => "file:///documents/report.pdf");
+    const removeOwnedFile = vi.fn(async () => undefined);
+
+    const result = await buildIncomingShareDraft({
+      id: "share-report",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [file],
+      resolvedPayloads: [
+        {
+          ...file,
+          contentUri: file.value,
+          contentType: "file",
+          contentMimeType: "application/pdf",
+          contentSize: 42,
+          originalName: "report.pdf",
+        },
+      ],
+      fileReader: { readBase64, persistFile, removeOwnedFile },
+    });
+
+    expect(result.attachments).toEqual([
+      {
+        id: "share-report:file:0",
+        type: "file",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 42,
+        fileUri: "file:///documents/report.pdf",
+      },
+    ]);
+    expect(readBase64).not.toHaveBeenCalled();
+    expect(persistFile).toHaveBeenCalledWith(file.value, "report.pdf");
+    expect(removeOwnedFile).toHaveBeenCalledWith(file.value);
+  });
+
+  it("rejects shared files that exceed the generic attachment limit", async () => {
+    const file: SharePayload = {
+      shareType: "file",
+      value: "file:///shared/huge.zip",
+      mimeType: "application/zip",
+    };
+    const persistFile = vi.fn(async () => "file:///documents/huge.zip");
+    const removeOwnedFile = vi.fn(async () => undefined);
+
+    const result = await buildIncomingShareDraft({
+      id: "share-huge",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [file],
+      resolvedPayloads: [
+        {
+          ...file,
+          contentUri: file.value,
+          contentType: "file",
+          contentMimeType: "application/zip",
+          contentSize: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
+          originalName: "huge.zip",
+        },
+      ],
+      fileReader: {
+        readBase64: async () => "unused",
+        persistFile,
+        removeOwnedFile,
+      },
+    });
+
+    expect(result.attachments).toEqual([]);
+    expect(result.warnings).toEqual(["'huge.zip' exceeds the 50 MB attachment limit."]);
+    expect(persistFile).not.toHaveBeenCalled();
+    expect(removeOwnedFile).toHaveBeenCalledWith(file.value);
   });
 
   it("releases every temporary file when a share exceeds the attachment limit", async () => {

@@ -4529,6 +4529,38 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             });
             assert.equal(streamedResponse.status, 204);
             yield* client[WS_METHODS.attachmentsDelete]({ attachmentId: streamed.attachmentId });
+
+            const uploadedFile = yield* client[WS_METHODS.attachmentsCreateUploadUrl]({
+              type: "file",
+              name: "report.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 6,
+            });
+            const fileResponse = yield* HttpClient.post(uploadedFile.relativeUrl, {
+              body: HttpBody.stream(
+                Stream.make(new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])),
+                "application/pdf",
+              ),
+            });
+            assert.equal(fileResponse.status, 204);
+            const uploadedFilePath = path.join(
+              config.attachmentsDir,
+              `${uploadedFile.attachmentId}.pdf`,
+            );
+            assert.isTrue(yield* fileSystem.exists(uploadedFilePath));
+
+            const download = yield* client[WS_METHODS.assetsCreateUrl]({
+              resource: { _tag: "attachment", attachmentId: uploadedFile.attachmentId },
+            });
+            const downloadResponse = yield* HttpClient.get(download.relativeUrl);
+            assert.equal(downloadResponse.status, 200);
+            assert.equal(downloadResponse.headers["content-disposition"], "attachment");
+            assert.equal(downloadResponse.headers["content-type"], "application/octet-stream");
+
+            yield* client[WS_METHODS.attachmentsDelete]({
+              attachmentId: uploadedFile.attachmentId,
+            });
+            assert.isFalse(yield* fileSystem.exists(uploadedFilePath));
           }),
         ),
       );

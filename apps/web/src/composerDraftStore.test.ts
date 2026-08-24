@@ -65,6 +65,7 @@ import {
   markPromotedDraftThreadByRef,
   markPromotedDraftThreads,
   markPromotedDraftThreadsByRef,
+  type ComposerFileAttachment,
   type ComposerImageAttachment,
   useComposerDraftStore,
   DraftId,
@@ -100,6 +101,18 @@ function makeImage(input: {
     mimeType,
     sizeBytes: file.size,
     previewUrl: input.previewUrl,
+    file,
+  };
+}
+
+function makeFile(id: string): ComposerFileAttachment {
+  const file = new File(["report"], "report.pdf", { type: "application/pdf" });
+  return {
+    type: "file",
+    id,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
     file,
   };
 }
@@ -286,6 +299,71 @@ describe("composerDraftStore clearComposerContent", () => {
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
+  });
+});
+
+describe("composerDraftStore file attachments", () => {
+  const threadId = ThreadId.make("thread-files");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("persists uploaded file references without including file contents", () => {
+    const store = useComposerDraftStore.getState();
+    store.addFiles(threadRef, [makeFile("file-1")]);
+    store.setFileUpload(threadRef, "file-1", TEST_ENVIRONMENT_ID, "pending-report-pdf");
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const options = persistApi.getOptions();
+    const persisted = options.partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadKey: Record<string, { files?: Array<Record<string, unknown>> }>;
+    };
+
+    expect(persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.files).toEqual(
+      [
+        {
+          id: "file-1",
+          name: "report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 6,
+          attachmentId: "pending-report-pdf",
+          environmentId: TEST_ENVIRONMENT_ID,
+        },
+      ],
+    );
+
+    const hydrated = options.merge(persisted, useComposerDraftStore.getState());
+    expect(hydrated.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.files).toEqual([
+      {
+        type: "file",
+        id: "file-1",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 6,
+        file: null,
+        uploadedAttachmentId: "pending-report-pdf",
+        uploadEnvironmentId: TEST_ENVIRONMENT_ID,
+      },
+    ]);
+  });
+
+  it("removes generic files when the composer is cleared", () => {
+    const store = useComposerDraftStore.getState();
+    store.addFiles(threadRef, [makeFile("file-clear")]);
+
+    store.clearComposerContent(threadRef);
+
+    expect(store.getComposerDraft(threadRef)).toBeNull();
   });
 });
 

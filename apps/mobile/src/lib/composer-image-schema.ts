@@ -9,3 +9,17 @@ export const DraftComposerImageAttachmentSchema = Schema.Struct({
   sizeBytes: Schema.Number,
   dataUrl: Schema.String,
 });
+
+export const DraftComposerFileAttachmentSchema = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literal("file"),
+  name: Schema.String,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Number,
+  fileUri: Schema.String,
+});
+
+export const DraftComposerAttachmentSchema = Schema.Union([
+  DraftComposerImageAttachmentSchema,
+  DraftComposerFileAttachmentSchema,
+]);

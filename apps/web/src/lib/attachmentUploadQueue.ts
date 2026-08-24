@@ -7,7 +7,7 @@ import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { create } from "zustand";
 
-import type { ComposerImageAttachment } from "../composerDraftStore";
+import type { ComposerFileAttachment, ComposerImageAttachment } from "../composerDraftStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { attachmentEnvironment } from "../state/attachments";
 import { readPreparedConnection } from "../state/session";
@@ -25,7 +25,7 @@ export const useAttachmentUploadStore = create<AttachmentUploadStore>(() => ({
 }));
 
 interface UploadJob {
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerImageAttachment | ComposerFileAttachment;
   readonly environmentId: EnvironmentId;
   readonly previous?: ReadyAttachmentUpload;
   readonly settled: Promise<void>;
@@ -101,14 +101,26 @@ function uploadBytes(input: {
 }
 
 async function runUpload(job: UploadJob): Promise<void> {
-  const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
-    (supportedMimeType) => supportedMimeType === job.image.mimeType.toLowerCase(),
-  );
+  const mimeType =
+    job.image.type === "file"
+      ? job.image.mimeType.toLowerCase()
+      : PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
+          (supportedMimeType) => supportedMimeType === job.image.mimeType.toLowerCase(),
+        );
   if (!mimeType) {
     setUploadState(job.image.id, {
       status: "failed",
       environmentId: job.environmentId,
       reason: "Unsupported image type",
+      ...(job.previous ? { previous: job.previous } : {}),
+    });
+    return;
+  }
+  if (!job.image.file) {
+    setUploadState(job.image.id, {
+      status: "failed",
+      environmentId: job.environmentId,
+      reason: "Original file is no longer available",
       ...(job.previous ? { previous: job.previous } : {}),
     });
     return;
@@ -120,6 +132,7 @@ async function runUpload(job: UploadJob): Promise<void> {
     {
       environmentId: job.environmentId,
       input: {
+        ...(job.image.type === "file" ? { type: "file" as const } : {}),
         name: job.image.name,
         mimeType,
         sizeBytes: job.image.file.size,
@@ -249,7 +262,7 @@ function pumpUploads(): void {
 
 export function startAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerImageAttachment | ComposerFileAttachment;
 }): void {
   const existingJob = jobsByImageId.get(input.image.id);
   if (existingJob?.environmentId === input.environmentId) {
@@ -261,6 +274,18 @@ export function startAttachmentUpload(input: {
     return;
   }
   if (existing?.status === "failed" && existing.environmentId === input.environmentId) {
+    return;
+  }
+  if (
+    input.image.type === "file" &&
+    input.image.uploadEnvironmentId === input.environmentId &&
+    input.image.uploadedAttachmentId
+  ) {
+    setUploadState(input.image.id, {
+      status: "ready",
+      environmentId: input.environmentId,
+      attachmentId: input.image.uploadedAttachmentId,
+    });
     return;
   }
   if (
@@ -342,7 +367,7 @@ export function releaseAttachmentUpload(imageId: string): void {
 
 export function retryAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerImageAttachment | ComposerFileAttachment;
 }): void {
   const previous = readAttachmentUpload(input.image.id);
   cancelAttachmentUpload(input.image.id);
@@ -363,7 +388,7 @@ export async function awaitAttachmentUploads(imageIds: ReadonlyArray<string>): P
 
 export function getUploadedAttachments(input: {
   readonly environmentId: EnvironmentId;
-  readonly images: ReadonlyArray<ComposerImageAttachment>;
+  readonly images: ReadonlyArray<ComposerImageAttachment | ComposerFileAttachment>;
 }): ChatAttachment[] | null {
   const attachments: ChatAttachment[] = [];
   for (const image of input.images) {
@@ -372,7 +397,7 @@ export function getUploadedAttachments(input: {
       return null;
     }
     attachments.push({
-      type: "image",
+      type: image.type,
       id: upload.attachmentId,
       name: image.name,
       mimeType: image.mimeType,
@@ -382,7 +407,9 @@ export function getUploadedAttachments(input: {
   return attachments;
 }
 
-export function releaseAttachmentUploads(images: ReadonlyArray<ComposerImageAttachment>): void {
+export function releaseAttachmentUploads(
+  images: ReadonlyArray<ComposerImageAttachment | ComposerFileAttachment>,
+): void {
   for (const image of images) {
     releaseAttachmentUpload(image.id);
   }

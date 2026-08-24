@@ -1,9 +1,11 @@
 import {
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type UploadChatImageAttachment,
 } from "@t3tools/contracts";
+import type { PickMultipleFilesResult } from "expo-file-system";
 import { estimateBase64ByteSize } from "./base64";
 import { beginForegroundHandoff } from "./foreground-handoff";
 import { uuidv4 } from "./uuid";
@@ -12,6 +14,17 @@ export interface DraftComposerImageAttachment extends UploadChatImageAttachment 
   readonly id: string;
   readonly previewUri: string;
 }
+
+export interface DraftComposerFileAttachment {
+  readonly id: string;
+  readonly type: "file";
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly fileUri: string;
+}
+
+export type DraftComposerAttachment = DraftComposerImageAttachment | DraftComposerFileAttachment;
 
 /** Wire shape for startTurn: pure uploads without client draft id / previewUri. */
 export function toUploadChatImageAttachments(
@@ -27,6 +40,91 @@ export function toUploadChatImageAttachments(
 }
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
+const OWNED_ATTACHMENT_DIRECTORY = "t3-composer-attachments";
+
+export async function persistComposerAttachmentFile(uri: string, name: string): Promise<string> {
+  const { Directory, File, Paths } = await import("expo-file-system");
+  const directory = new Directory(Paths.document, OWNED_ATTACHMENT_DIRECTORY);
+  directory.create({ idempotent: true, intermediates: true });
+  const safeName =
+    Array.from(name, (character) =>
+      character === "/" || character === "\\" || character.charCodeAt(0) < 32 ? "-" : character,
+    ).join("") || "file";
+  const destination = new File(directory, `${uuidv4()}-${safeName}`);
+  await new File(uri).copy(destination);
+  return destination.uri;
+}
+
+export async function removePersistedComposerAttachmentFile(uri: string): Promise<void> {
+  try {
+    const path = new URL(uri).pathname;
+    if (!path.split("/").includes(OWNED_ATTACHMENT_DIRECTORY)) {
+      return;
+    }
+    const { File } = await import("expo-file-system");
+    const file = new File(uri);
+    if (file.exists) {
+      file.delete();
+    }
+  } catch (error) {
+    console.warn("[composer-attachments] could not remove local file", error);
+  }
+}
+
+export async function pickComposerFiles(input: {
+  readonly existingCount: number;
+  readonly maxBytes?: number;
+}): Promise<{
+  readonly files: ReadonlyArray<DraftComposerFileAttachment>;
+  readonly error: string | null;
+}> {
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  if (remainingSlots <= 0) {
+    return {
+      files: [],
+      error: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
+    };
+  }
+
+  const { File } = await import("expo-file-system");
+  const endHandoff = beginForegroundHandoff();
+  let result: PickMultipleFilesResult;
+  try {
+    result = await File.pickFileAsync({ multipleFiles: true });
+  } finally {
+    endHandoff();
+  }
+  if (result.canceled) {
+    return { files: [], error: null };
+  }
+
+  const maxBytes = input.maxBytes ?? PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+  const attachments: DraftComposerFileAttachment[] = [];
+  let error: string | null = null;
+  for (const file of result.result.slice(0, remainingSlots)) {
+    const sizeBytes = file.size ?? 0;
+    if (sizeBytes <= 0 || sizeBytes > maxBytes) {
+      error = `'${file.name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`;
+      continue;
+    }
+    try {
+      attachments.push({
+        id: uuidv4(),
+        type: "file",
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        sizeBytes,
+        fileUri: await persistComposerAttachmentFile(file.uri, file.name),
+      });
+    } catch {
+      error = `Could not read '${file.name}'.`;
+    }
+  }
+  if (result.result.length > remainingSlots) {
+    error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
+  }
+  return { files: attachments, error };
+}
 
 async function loadImagePicker() {
   try {

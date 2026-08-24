@@ -558,6 +558,33 @@ describe("MessagesTimeline", () => {
     expect(onAnchorReady).not.toHaveBeenCalled();
   });
 
+  it("renders generic attachments as download links instead of image previews", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
+      message: {
+        ...buildUserTimelineEntry("Read the report.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "attachment-report-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+            previewUrl: "https://environment.test/api/assets/report.pdf",
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain('href="https://environment.test/api/assets/report.pdf"');
+    expect(markup).toContain('download="report.pdf"');
+    expect(markup).not.toContain('alt="report.pdf"');
+  });
+
   it("keeps reserved end space when tool work starts while reading history", () => {
     const turnId = TurnId.make("turn-with-active-tool");
     const firstEntry = buildUserTimelineEntry("Run the command.");

@@ -6,7 +6,7 @@ import { releaseAttachmentUploads } from "./attachmentUploadQueue";
 export function releaseComposerDraftUploads(target: ScopedThreadRef | DraftId): void {
   const draft = useComposerDraftStore.getState().getComposerDraft(target);
   if (draft) {
-    releaseAttachmentUploads(draft.images);
+    releaseAttachmentUploads([...draft.images, ...draft.files]);
   }
 }
 
@@ -17,7 +17,8 @@ export function releaseProjectDraftUploads(projectRef: ScopedProjectRef): void {
       session.environmentId === projectRef.environmentId &&
       session.projectId === projectRef.projectId
     ) {
-      releaseAttachmentUploads(store.draftsByThreadKey[draftKey]?.images ?? []);
+      const draft = store.draftsByThreadKey[draftKey];
+      releaseAttachmentUploads(draft ? [...draft.images, ...draft.files] : []);
     }
   }
 }

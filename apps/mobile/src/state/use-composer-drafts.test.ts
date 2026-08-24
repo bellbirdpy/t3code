@@ -86,6 +86,28 @@ afterEach(() => {
 });
 
 describe("mobile composer drafts", () => {
+  it("hydrates generic file attachments from their saved local paths", () => {
+    const file = {
+      id: "file-1",
+      type: "file" as const,
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      fileUri: "file:///documents/report.pdf",
+    };
+
+    expect(
+      decodePersistedComposerDrafts({
+        schemaVersion: 1,
+        drafts: {
+          "environment-1:thread-1": { text: "Review this file", attachments: [file] },
+        },
+      }),
+    ).toEqual({
+      "environment-1:thread-1": { text: "Review this file", attachments: [file] },
+    });
+  });
+
   it("hydrates selector state even when the message content is empty", () => {
     expect(
       decodePersistedComposerDrafts({

@@ -96,6 +96,9 @@ describe("normalizeDispatchCommand attachments", () => {
       expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${attachmentId}.png`))).toBe(
         true,
       );
+      expect(NodeFS.statSync(pendingPath).ino).toBe(
+        NodeFS.statSync(NodePath.join(config.attachmentsDir, `${attachmentId}.png`)).ino,
+      );
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -121,6 +124,45 @@ describe("normalizeDispatchCommand attachments", () => {
 
       expect(normalized.message.attachments).toHaveLength(2);
       expect(normalized.message.attachments[1]?.id.startsWith("thread-1-")).toBe(true);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("claims uploaded documents without changing their original extension", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const pendingId = `pending-${attachmentUuid}-pdf`;
+      const pendingPath = NodePath.join(config.attachmentsDir, `${pendingId}.pdf`);
+      NodeFS.writeFileSync(pendingPath, Buffer.from("report"));
+
+      const imageCommand = turnStartCommand({ attachments: [] });
+      if (imageCommand.type !== "thread.turn.start") {
+        throw new Error("Expected a thread.turn.start command.");
+      }
+      const normalized = yield* normalizeDispatchCommand({
+        ...imageCommand,
+        message: {
+          ...imageCommand.message,
+          attachments: [
+            {
+              type: "file",
+              id: pendingId,
+              name: "report.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 6,
+            },
+          ],
+        },
+      });
+      if (normalized.type !== "thread.turn.start") {
+        throw new Error("Expected a thread.turn.start command.");
+      }
+
+      const attachment = normalized.message.attachments[0]!;
+      expect(attachment.type).toBe("file");
+      expect(attachment.id).toMatch(/^thread-1-.*-pdf$/);
+      const claimedPath = NodePath.join(config.attachmentsDir, `${attachment.id}.pdf`);
+      expect(NodeFS.readFileSync(claimedPath)).toEqual(Buffer.from("report"));
+      expect(NodeFS.statSync(claimedPath).ino).toBe(NodeFS.statSync(pendingPath).ino);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -312,7 +354,7 @@ describe("normalizeDispatchCommand attachments", () => {
           })),
         },
       }).pipe(Effect.flip);
-      expect(mismatchedType.message).toContain("image type");
+      expect(mismatchedType.message).toContain("attachment type");
     }).pipe(Effect.provide(testLayer)),
   );
 });

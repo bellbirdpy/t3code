@@ -33,7 +33,12 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
+import {
+  DEFAULT_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type ChatFileAttachment,
+  type ChatImageAttachment,
+} from "./types";
 import {
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
@@ -93,6 +98,23 @@ export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "prev
   file: File;
 }
 
+export interface ComposerFileAttachment extends Omit<ChatFileAttachment, "previewUrl"> {
+  file: File | null;
+  uploadedAttachmentId?: string;
+  uploadEnvironmentId?: EnvironmentId;
+}
+
+const PersistedComposerFileAttachment = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Number,
+  attachmentId: Schema.String,
+  environmentId: Schema.String,
+});
+type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
+const isPersistedComposerFileAttachment = Schema.is(PersistedComposerFileAttachment);
+
 const PersistedTerminalContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
@@ -129,6 +151,7 @@ type PersistedElementContextDraft = typeof PersistedElementContextDraft.Type;
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
+  files: Schema.optionalKey(Schema.Array(PersistedComposerFileAttachment)),
   terminalContexts: Schema.optionalKey(Schema.Array(PersistedTerminalContextDraft)),
   elementContexts: Schema.optionalKey(Schema.Array(PersistedElementContextDraft)),
   previewAnnotations: Schema.optionalKey(Schema.Array(PreviewAnnotationPayloadSchema)),
@@ -251,6 +274,7 @@ const PersistedComposerDraftStoreStorage = Schema.Struct({
 export interface ComposerThreadDraftState {
   prompt: string;
   images: ComposerImageAttachment[];
+  files: ComposerFileAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
@@ -295,6 +319,7 @@ export function composerDraftHasUserContent(
   return (
     draft.prompt.trim().length > 0 ||
     draft.images.length > 0 ||
+    draft.files.length > 0 ||
     draft.persistedAttachments.length > 0 ||
     draft.terminalContexts.length > 0 ||
     draft.elementContexts.length > 0 ||
@@ -473,6 +498,14 @@ interface ComposerDraftStoreState {
   addImage: (threadRef: ComposerThreadTarget, image: ComposerImageAttachment) => void;
   addImages: (threadRef: ComposerThreadTarget, images: ComposerImageAttachment[]) => void;
   removeImage: (threadRef: ComposerThreadTarget, imageId: string) => void;
+  addFiles: (threadRef: ComposerThreadTarget, files: ComposerFileAttachment[]) => void;
+  removeFile: (threadRef: ComposerThreadTarget, fileId: string) => void;
+  setFileUpload: (
+    threadRef: ComposerThreadTarget,
+    fileId: string,
+    environmentId: EnvironmentId,
+    attachmentId: string,
+  ) => void;
   insertTerminalContext: (
     threadRef: ComposerThreadTarget,
     prompt: string,
@@ -604,6 +637,7 @@ const EMPTY_PERSISTED_DRAFT_STORE_STATE = Object.freeze<PersistedComposerDraftSt
 });
 
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
+const EMPTY_FILES: ComposerFileAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
@@ -611,6 +645,7 @@ const EMPTY_ELEMENT_CONTEXTS: ElementContextDraft[] = [];
 const EMPTY_PREVIEW_ANNOTATIONS: PreviewAnnotationPayload[] = [];
 const EMPTY_REVIEW_COMMENTS: ReviewCommentContext[] = [];
 Object.freeze(EMPTY_IMAGES);
+Object.freeze(EMPTY_FILES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 Object.freeze(EMPTY_ELEMENT_CONTEXTS);
@@ -626,6 +661,7 @@ const EMPTY_COMPOSER_DRAFT_MODEL_STATE = Object.freeze<ComposerDraftModelState>(
 const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   prompt: "",
   images: EMPTY_IMAGES,
+  files: EMPTY_FILES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
@@ -648,6 +684,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
     prompt: "",
     images: [],
+    files: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
@@ -722,6 +759,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
+    draft.files.length === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.elementContexts.length === 0 &&
@@ -1694,6 +1732,9 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const files = Array.isArray(draftCandidate.files)
+      ? draftCandidate.files.filter(isPersistedComposerFileAttachment)
+      : [];
     const terminalContexts = Array.isArray(draftCandidate.terminalContexts)
       ? draftCandidate.terminalContexts.flatMap((entry) => {
           const normalized = normalizePersistedTerminalContextDraft(entry);
@@ -1771,6 +1812,7 @@ function normalizePersistedDraftsByThreadId(
     if (
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
+      files.length === 0 &&
       terminalContexts.length === 0 &&
       elementContexts.length === 0 &&
       reviewComments.length === 0 &&
@@ -1795,6 +1837,7 @@ function normalizePersistedDraftsByThreadId(
     nextDraftsByThreadKey[normalizedThreadKey] = {
       prompt,
       attachments,
+      ...(files.length > 0 ? { files } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
       ...(elementContexts.length > 0 ? { elementContexts } : {}),
       ...(reviewComments.length > 0 ? { reviewComments } : {}),
@@ -1902,6 +1945,7 @@ function partializeComposerDraftStoreState(
     if (
       draft.prompt.length === 0 &&
       draft.persistedAttachments.length === 0 &&
+      draft.files.length === 0 &&
       draft.terminalContexts.length === 0 &&
       draft.elementContexts.length === 0 &&
       draft.previewAnnotations.length === 0 &&
@@ -1915,6 +1959,24 @@ function partializeComposerDraftStoreState(
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
       prompt: draft.prompt,
       attachments: draft.persistedAttachments,
+      ...(draft.files.length > 0
+        ? {
+            files: draft.files.flatMap((file) =>
+              file.uploadedAttachmentId && file.uploadEnvironmentId
+                ? [
+                    {
+                      id: file.id,
+                      name: file.name,
+                      mimeType: file.mimeType,
+                      sizeBytes: file.sizeBytes,
+                      attachmentId: file.uploadedAttachmentId,
+                      environmentId: file.uploadEnvironmentId,
+                    },
+                  ]
+                : [],
+            ),
+          }
+        : {}),
       ...(draft.terminalContexts.length > 0
         ? {
             terminalContexts: draft.terminalContexts.map((context) => ({
@@ -2195,6 +2257,17 @@ function toHydratedThreadDraft(
   return {
     prompt: persistedDraft.prompt,
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
+    files:
+      persistedDraft.files?.map((file) => ({
+        type: "file" as const,
+        id: file.id,
+        name: file.name,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        file: null,
+        uploadedAttachmentId: file.attachmentId,
+        uploadEnvironmentId: file.environmentId as EnvironmentId,
+      })) ?? [],
     nonPersistedImageIds: [],
     persistedAttachments: [...persistedDraft.attachments],
     terminalContexts:
@@ -3041,6 +3114,98 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
+        addFiles: (threadRef, files) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0 || files.length === 0) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const knownIds = new Set(existing.files.map((file) => file.id));
+            const knownFiles = new Set(
+              existing.files.map(
+                (file) => `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`,
+              ),
+            );
+            const accepted: ComposerFileAttachment[] = [];
+            for (const file of files) {
+              const key = `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`;
+              if (knownIds.has(file.id) || knownFiles.has(key)) {
+                continue;
+              }
+              accepted.push(file);
+              knownIds.add(file.id);
+              knownFiles.add(key);
+            }
+            if (accepted.length === 0) {
+              return state;
+            }
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: { ...existing, files: [...existing.files, ...accepted] },
+              },
+            };
+          });
+        },
+        removeFile: (threadRef, fileId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current?.files.some((file) => file.id === fileId)) {
+              return state;
+            }
+            const nextDraft = {
+              ...current,
+              files: current.files.filter((file) => file.id !== fileId),
+            } satisfies ComposerThreadDraftState;
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setFileUpload: (threadRef, fileId, environmentId, attachmentId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            const file = current?.files.find((entry) => entry.id === fileId);
+            if (
+              !current ||
+              !file ||
+              (file.uploadEnvironmentId === environmentId &&
+                file.uploadedAttachmentId === attachmentId)
+            ) {
+              return state;
+            }
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...current,
+                  files: current.files.map((entry) =>
+                    entry.id === fileId
+                      ? {
+                          ...entry,
+                          uploadedAttachmentId: attachmentId,
+                          uploadEnvironmentId: environmentId,
+                        }
+                      : entry,
+                  ),
+                },
+              },
+            };
+          });
+        },
         insertTerminalContext: (threadRef, prompt, context, index) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);
           const threadId = resolveComposerThreadId(get(), threadRef);
@@ -3441,6 +3606,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...current,
               prompt: "",
               images: [],
+              files: [],
               nonPersistedImageIds: [],
               persistedAttachments: [],
               terminalContexts: [],
@@ -3509,6 +3675,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...destination,
               prompt: movedPrompt,
               images: [...destination.images, ...source.images],
+              files: [...destination.files, ...source.files],
               nonPersistedImageIds: [
                 ...destination.nonPersistedImageIds,
                 ...source.nonPersistedImageIds,
@@ -3525,6 +3692,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...source,
               prompt: ensureInlineTerminalContextPlaceholders("", source.terminalContexts.length),
               images: [],
+              files: [],
               nonPersistedImageIds: [],
               persistedAttachments: [],
             };

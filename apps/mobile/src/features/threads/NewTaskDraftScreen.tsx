@@ -41,7 +41,11 @@ import {
 } from "./use-thread-settings-sheet-presentation";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
-import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
+import {
+  convertPastedImagesToAttachments,
+  pickComposerFiles,
+  pickComposerImages,
+} from "../../lib/composerImages";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
@@ -472,7 +476,7 @@ export function NewTaskDraftScreen(props: {
       const warnings = [...incomingShare.warnings];
       if (skippedAttachmentCount > 0) {
         warnings.push(
-          `${skippedAttachmentCount} shared image${skippedAttachmentCount === 1 ? " was" : "s were"} skipped because this draft reached the attachment limit.`,
+          `${skippedAttachmentCount} shared file${skippedAttachmentCount === 1 ? " was" : "s were"} skipped because this draft reached the attachment limit.`,
         );
       }
       if (warnings.length > 0) {
@@ -616,6 +620,28 @@ export function NewTaskDraftScreen(props: {
     const result = await pickComposerImages({ existingCount: flow.attachments.length });
     if (result.images.length > 0) {
       flow.appendAttachments(result.images);
+    }
+  }
+
+  async function handlePickFiles(): Promise<void> {
+    if (isIncomingShareTransferPending) {
+      return;
+    }
+    const maxBytes =
+      selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments?.maxUploadBytes;
+    if (maxBytes === undefined) {
+      Alert.alert("File attachments are not available on this server.");
+      return;
+    }
+    const result = await pickComposerFiles({
+      existingCount: flow.attachments.length,
+      maxBytes,
+    });
+    if (result.files.length > 0) {
+      flow.appendAttachments(result.files);
+    }
+    if (result.error) {
+      Alert.alert("Could not attach file", result.error);
     }
   }
 
@@ -993,7 +1019,17 @@ export function NewTaskDraftScreen(props: {
               accessibilityLabel="Add attachment"
               disabled={isIncomingShareTransferPending}
               icon="plus"
-              onPress={() => void handlePickImages()}
+              onPress={() => {
+                if (selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments) {
+                  Alert.alert("Add attachment", undefined, [
+                    { text: "Photos", onPress: () => void handlePickImages() },
+                    { text: "Files", onPress: () => void handlePickFiles() },
+                    { text: "Cancel", style: "cancel" },
+                  ]);
+                  return;
+                }
+                void handlePickImages();
+              }}
               showChevron={false}
             />
             <ComposerInlineControl

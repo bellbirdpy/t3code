@@ -176,13 +176,13 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             });
             if (expectedPath !== claim.finalPath) {
               return yield* new OrchestrationDispatchCommandError({
-                message: `Attachment '${attachment.name}' cannot be sent: image type does not match the upload.`,
+                message: `Attachment '${attachment.name}' cannot be sent: attachment type does not match the upload.`,
               });
             }
 
-            // Keep the pending copy until the turn succeeds. A failed thread
-            // bootstrap can then retry with a fresh thread id.
-            yield* fileSystem.copyFile(claim.currentPath, claim.finalPath).pipe(
+            // A hard link keeps the pending upload retryable without copying its bytes.
+            yield* fileSystem.link(claim.currentPath, claim.finalPath).pipe(
+              Effect.catch(() => fileSystem.copyFile(claim.currentPath, claim.finalPath)),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationDispatchCommandError({

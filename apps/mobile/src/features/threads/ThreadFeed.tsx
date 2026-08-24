@@ -202,6 +202,45 @@ function MessageAttachmentImage(props: {
   );
 }
 
+function MessageAttachmentFile(props: {
+  readonly environmentId: EnvironmentId;
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly sizeBytes: number;
+}) {
+  const uri = useAssetUrl(props.environmentId, {
+    _tag: "attachment",
+    attachmentId: props.attachmentId,
+  });
+  const sizeLabel =
+    props.sizeBytes >= 1024 * 1024
+      ? `${(props.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+      : `${Math.max(1, Math.ceil(props.sizeBytes / 1024))} KB`;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${props.name}`}
+      disabled={uri === null}
+      className="flex-row items-center gap-2 py-1"
+      onPress={() => {
+        if (uri !== null) {
+          void tryOpenExternalUrl(uri, "file-preview");
+        }
+      }}
+    >
+      <SymbolView name="doc.text" size={16} tintColor="#a3a3a3" type="monochrome" />
+      <Text
+        className="min-w-0 flex-1 text-sm text-neutral-900 dark:text-neutral-100"
+        numberOfLines={1}
+      >
+        {props.name}
+      </Text>
+      <Text className="text-xs text-neutral-500 dark:text-neutral-400">{sizeLabel}</Text>
+    </Pressable>
+  );
+}
+
 function ThreadMarkdownImageView(props: {
   readonly uri: string | null;
   readonly sourceKey: string;
@@ -1088,13 +1127,21 @@ function renderFeedEntry(
               />
             ) : null}
             {attachments.map((attachment) => {
-              return (
+              return attachment.type === "image" ? (
                 <MessageAttachmentImage
                   key={attachment.id}
                   environmentId={props.environmentId}
                   attachmentId={attachment.id}
                   className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
                   onPressImage={props.onPressImage}
+                />
+              ) : (
+                <MessageAttachmentFile
+                  key={attachment.id}
+                  environmentId={props.environmentId}
+                  attachmentId={attachment.id}
+                  name={attachment.name}
+                  sizeBytes={attachment.sizeBytes}
                 />
               );
             })}
@@ -1150,13 +1197,21 @@ function renderFeedEntry(
           )
         ) : null}
         {attachments.map((attachment) => {
-          return (
+          return attachment.type === "image" ? (
             <MessageAttachmentImage
               key={attachment.id}
               environmentId={props.environmentId}
               attachmentId={attachment.id}
               className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
               onPressImage={props.onPressImage}
+            />
+          ) : (
+            <MessageAttachmentFile
+              key={attachment.id}
+              environmentId={props.environmentId}
+              attachmentId={attachment.id}
+              name={attachment.name}
+              sizeBytes={attachment.sizeBytes}
             />
           );
         })}

@@ -78,6 +78,27 @@ describe("thread outbox", () => {
     ).toThrow();
   });
 
+  it("persists generic attachment paths without embedding their contents", () => {
+    const message = {
+      ...queuedMessage({
+        messageId: "message-file",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      attachments: [
+        {
+          id: "file-1",
+          type: "file" as const,
+          name: "report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 42,
+          fileUri: "file:///documents/report.pdf",
+        },
+      ],
+    } satisfies QueuedThreadMessage;
+
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(message))).toEqual(message);
+  });
+
   it("persists the exact selector snapshot while remaining compatible with v1 messages", () => {
     const legacyMessage = queuedMessage({
       messageId: "message-1",

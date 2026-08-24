@@ -17,6 +17,7 @@ import {
 } from "./incoming-share-model";
 import { createIncomingSharePayloadReader } from "./incoming-share-native";
 import { IncomingShareInbox } from "./incoming-share-inbox";
+import { persistComposerAttachmentFile } from "../../lib/composerImages";
 import {
   loadIncomingShareDrafts,
   removeIncomingShareDraft,
@@ -54,7 +55,7 @@ const getIncomingSharePayloads = createIncomingSharePayloadReader({
   readPayloads: getSharedPayloads,
 });
 
-async function resolvedPayloadsForImages(): Promise<ReadonlyArray<ResolvedSharePayload>> {
+async function resolvedPayloadsForFiles(): Promise<ReadonlyArray<ResolvedSharePayload>> {
   try {
     return await getResolvedSharedPayloadsAsync();
   } catch (error) {
@@ -84,6 +85,11 @@ async function readBase64(uri: string): Promise<string> {
   return new File(uri).base64();
 }
 
+async function readFileSize(uri: string): Promise<number> {
+  const { File } = await import("expo-file-system");
+  return new File(uri).size ?? 0;
+}
+
 async function removeOwnedFile(uri: string): Promise<void> {
   if (!uri.startsWith("file:")) {
     return;
@@ -99,21 +105,19 @@ async function removeOwnedFile(uri: string): Promise<void> {
   }
 }
 
-async function removeReplayedImagePayloadFiles(
-  payloads: ReadonlyArray<SharePayload>,
-): Promise<void> {
+async function removeReplayedPayloadFiles(payloads: ReadonlyArray<SharePayload>): Promise<void> {
   const uris = new Set<string>();
   for (const payload of payloads) {
-    if (payload.shareType === "image") {
+    if (["image", "file", "audio", "video"].includes(payload.shareType)) {
       uris.add(payload.value);
     }
   }
   if (uris.size === 0) {
     return;
   }
-  const resolvedPayloads = await resolvedPayloadsForImages();
+  const resolvedPayloads = await resolvedPayloadsForFiles();
   for (const payload of resolvedPayloads) {
-    if (payload.shareType === "image" && payload.contentUri) {
+    if (["image", "file", "audio", "video"].includes(payload.shareType) && payload.contentUri) {
       uris.add(payload.contentUri);
     }
   }
@@ -131,14 +135,18 @@ const incomingShareInbox = new IncomingShareInbox({
   clearPayloads: clearSharedPayloads,
   buildDraft: async ({ payloads, id, createdAt }) => {
     const cleanupUris = new Set<string>();
-    const resolvedPayloads = payloads.some((payload) => payload.shareType === "image")
-      ? await resolvedPayloadsForImages()
+    const resolvedPayloads = payloads.some((payload) =>
+      ["image", "file", "audio", "video"].includes(payload.shareType),
+    )
+      ? await resolvedPayloadsForFiles()
       : [];
     const draft = await buildIncomingShareDraft({
       payloads,
       resolvedPayloads,
       fileReader: {
         readBase64,
+        persistFile: persistComposerAttachmentFile,
+        readSize: readFileSize,
         removeOwnedFile: (uri) => {
           cleanupUris.add(uri);
         },
@@ -153,7 +161,7 @@ const incomingShareInbox = new IncomingShareInbox({
       },
     };
   },
-  cleanupReplayedPayloads: removeReplayedImagePayloadFiles,
+  cleanupReplayedPayloads: removeReplayedPayloadFiles,
   idForPayloads: incomingShareIdForPayloads,
   now: () => new Date().toISOString(),
   onClearError: (error) => {

@@ -14,7 +14,14 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../../state/threads";
-import type { DraftComposerImageAttachment } from "../../lib/composerImages";
+import {
+  removePersistedComposerAttachmentFile,
+  type DraftComposerAttachment,
+} from "../../lib/composerImages";
+import {
+  deletePendingMobileAttachments,
+  uploadMobileAttachments,
+} from "../../lib/attachmentUpload";
 import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { randomHex } from "../../lib/uuid";
@@ -36,7 +43,7 @@ export function useCreateProjectThread() {
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
       readonly initialMessageText: string;
-      readonly initialAttachments: ReadonlyArray<DraftComposerImageAttachment>;
+      readonly initialAttachments: ReadonlyArray<DraftComposerAttachment>;
       /** Reuse identifiers from a queued pending task instead of minting new ones. */
       readonly turnMetadata?: TurnCommandMetadata;
     }) => {
@@ -56,6 +63,18 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(Cause.fail(validationError));
       }
 
+      let uploaded: Awaited<ReturnType<typeof uploadMobileAttachments>>;
+      try {
+        uploaded = await uploadMobileAttachments({
+          environmentId: input.project.environmentId,
+          attachments: input.initialAttachments,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "An attachment could not upload.";
+        setPendingConnectionError(message);
+        return AsyncResult.failure(Cause.fail(new Error(message)));
+      }
+
       const result = await startTurn({
         environmentId: input.project.environmentId,
         input: buildProjectThreadStartTurnInput({
@@ -67,6 +86,7 @@ export function useCreateProjectThread() {
           createdAt: metadata.createdAt,
           text: initialMessageText,
           attachments: input.initialAttachments,
+          uploadedAttachments: uploaded.attachments,
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
@@ -77,6 +97,10 @@ export function useCreateProjectThread() {
           worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
+      await deletePendingMobileAttachments(
+        input.project.environmentId,
+        uploaded.pendingAttachmentIds,
+      );
       if (AsyncResult.isFailure(result)) {
         const error = Cause.squash(result.cause);
         setPendingConnectionError(
@@ -85,6 +109,11 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(result.cause);
       }
       setPendingConnectionError(null);
+      await Promise.all(
+        input.initialAttachments
+          .filter((attachment) => attachment.type === "file")
+          .map((attachment) => removePersistedComposerAttachmentFile(attachment.fileUri)),
+      );
 
       return mapAtomCommandResult(result, () =>
         scopeThreadRef(input.project.environmentId, threadId),

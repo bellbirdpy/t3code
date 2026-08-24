@@ -26,7 +26,9 @@ import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
   pasteComposerClipboard,
+  pickComposerFiles,
   pickComposerImages,
+  removePersistedComposerAttachmentFile,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -304,6 +306,31 @@ export function useThreadComposerState() {
     }
   }, [composerDrafts, selectedThreadShell]);
 
+  const onPickDraftFiles = useCallback(async () => {
+    if (!selectedThreadShell) {
+      return;
+    }
+    const maxBytes =
+      selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.fileAttachments
+        ?.maxUploadBytes;
+    if (maxBytes === undefined) {
+      setPendingConnectionError("This server does not support file attachments.");
+      return;
+    }
+
+    const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    const result = await pickComposerFiles({
+      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      maxBytes,
+    });
+    if (result.files.length > 0) {
+      appendComposerDraftAttachments(threadKey, result.files);
+    }
+    if (result.error) {
+      setPendingConnectionError(result.error);
+    }
+  }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+
   const onPasteIntoDraft = useCallback(async () => {
     if (!selectedThreadShell) {
       return;
@@ -358,7 +385,13 @@ export function useThreadComposerState() {
       }
 
       const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+      const removedAttachment = getComposerDraftSnapshot(threadKey).attachments.find(
+        (attachment) => attachment.id === imageId,
+      );
       removeComposerDraftAttachment(threadKey, imageId);
+      if (removedAttachment?.type === "file") {
+        void removePersistedComposerAttachmentFile(removedAttachment.fileUri);
+      }
     },
     [selectedThreadShell],
   );
@@ -404,6 +437,7 @@ export function useThreadComposerState() {
     interactionMode,
     onChangeDraftMessage,
     onPickDraftImages,
+    onPickDraftFiles,
     onPasteIntoDraft,
     onNativePasteImages,
     onRemoveDraftImage,

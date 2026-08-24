@@ -243,7 +243,7 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
   }),
 );
 
-it.effect("accepts both inline and uploaded image attachments from clients", () =>
+it.effect("accepts inline images, uploaded images, and uploaded files from clients", () =>
   Effect.gen(function* () {
     const command = yield* decodeClientOrchestrationCommand({
       type: "thread.turn.start",
@@ -268,6 +268,13 @@ it.effect("accepts both inline and uploaded image attachments from clients", () 
             mimeType: "image/png",
             sizeBytes: 3,
           },
+          {
+            type: "file",
+            id: "pending-00000000-0000-4000-8000-000000000002-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 3,
+          },
         ],
       },
       runtimeMode: "full-access",
@@ -278,9 +285,10 @@ it.effect("accepts both inline and uploaded image attachments from clients", () 
     if (command.type !== "thread.turn.start") {
       assert.fail(`Expected thread.turn.start, received ${command.type}.`);
     }
-    assert.strictEqual(command.message.attachments.length, 2);
+    assert.strictEqual(command.message.attachments.length, 3);
     assert.strictEqual("dataUrl" in command.message.attachments[0]!, true);
     assert.strictEqual("id" in command.message.attachments[1]!, true);
+    assert.strictEqual(command.message.attachments[2]!.type, "file");
   }),
 );
 
