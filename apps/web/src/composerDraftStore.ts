@@ -2,7 +2,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
-  type EnvironmentId,
+  EnvironmentId,
   ModelSelection,
   ProjectId,
   ProviderInstanceId,
@@ -111,7 +111,7 @@ export const PersistedComposerFileAttachment = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
   attachmentId: Schema.String,
-  environmentId: Schema.String,
+  environmentId: EnvironmentId,
 });
 export type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
 const isPersistedComposerFileAttachment = Schema.is(PersistedComposerFileAttachment);
@@ -2266,7 +2266,7 @@ function toHydratedThreadDraft(
         sizeBytes: file.sizeBytes,
         file: null,
         uploadedAttachmentId: file.attachmentId,
-        uploadEnvironmentId: file.environmentId as EnvironmentId,
+        uploadEnvironmentId: file.environmentId,
       })) ?? [],
     nonPersistedImageIds: [],
     persistedAttachments: [...persistedDraft.attachments],

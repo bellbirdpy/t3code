@@ -1072,7 +1072,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   key={file.id}
                   href={file.previewUrl}
                   download={file.name}
-                  className="flex min-w-0 items-center gap-2 py-1 text-sm hover:text-primary"
+                  className="flex min-w-0 items-center gap-2 py-1 text-sm hover:underline"
                 >
                   {content}
                 </a>

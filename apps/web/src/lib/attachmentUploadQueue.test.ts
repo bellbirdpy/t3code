@@ -32,6 +32,7 @@ import {
   getUploadedAttachments,
   readAttachmentUpload,
   releaseAttachmentUpload,
+  releasePersistedAttachmentUpload,
   releaseAttachmentUploads,
   retryAttachmentUpload,
   startAttachmentUpload,
@@ -254,6 +255,24 @@ describe("attachmentUploadQueue", () => {
       attachmentId: "pending-restored-pdf",
     });
     expect(TestXmlHttpRequest.requests).toHaveLength(0);
+  });
+
+  it("deletes a persisted server upload even when browser upload state is gone", () => {
+    releasePersistedAttachmentUpload({
+      id: "stashed-report",
+      environmentId: firstEnvironment,
+      attachmentId: "pending-00000000-0000-4000-8000-000000000001-pdf",
+    });
+
+    expect(mocks.runAtomCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      mocks.removeUpload,
+      {
+        environmentId: firstEnvironment,
+        input: { attachmentId: "pending-00000000-0000-4000-8000-000000000001-pdf" },
+      },
+      expect.anything(),
+    );
   });
 
   it("retries rejected uploads", async () => {

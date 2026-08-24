@@ -365,6 +365,23 @@ export function releaseAttachmentUpload(imageId: string): void {
   clearUploadState(imageId);
 }
 
+export function releasePersistedAttachmentUpload(input: {
+  readonly id: string;
+  readonly environmentId: EnvironmentId;
+  readonly attachmentId: string;
+}): void {
+  const upload = readAttachmentUpload(input.id);
+  if (
+    upload?.status === "ready" &&
+    upload.environmentId === input.environmentId &&
+    upload.attachmentId === input.attachmentId
+  ) {
+    releaseAttachmentUpload(input.id);
+    return;
+  }
+  deletePendingUpload(input.environmentId, input.attachmentId);
+}
+
 export function retryAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
   readonly image: ComposerImageAttachment | ComposerFileAttachment;

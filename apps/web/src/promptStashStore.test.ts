@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { EnvironmentId } from "@t3tools/contracts";
 
 import { removeLocalStorageItem } from "./hooks/useLocalStorage";
 
@@ -170,7 +171,7 @@ describe("promptStashStore", () => {
       mimeType: "application/pdf",
       sizeBytes: 42,
       attachmentId: "pending-report-pdf",
-      environmentId: "environment-1",
+      environmentId: EnvironmentId.make("environment-1"),
     };
 
     store.stashEntry({ ...makeEntry({ id: "with-file" }), files: [file] });
