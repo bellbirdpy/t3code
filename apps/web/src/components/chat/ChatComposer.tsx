@@ -2254,18 +2254,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       let restoredFileCount = 0;
       if (stashedFiles.length > 0) {
         const existingFileIds = new Set(composerFilesRef.current.map((file) => file.id));
+        const retainedUploadIds = new Set(
+          composerFilesRef.current.flatMap((file) =>
+            file.uploadedAttachmentId ? [file.uploadedAttachmentId] : [],
+          ),
+        );
         const existingFileKeys = new Set(
           composerFilesRef.current.map(
             (file) => `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`,
           ),
         );
+        const duplicateFiles: PersistedComposerFileAttachment[] = [];
         const filesToRestore = stashedFiles.filter((file) => {
           const key = `${file.mimeType}\u0000${file.sizeBytes}\u0000${file.name}`;
           if (existingFileIds.has(file.id) || existingFileKeys.has(key)) {
+            if (!retainedUploadIds.has(file.attachmentId)) {
+              duplicateFiles.push(file);
+            }
             return false;
           }
           existingFileIds.add(file.id);
           existingFileKeys.add(key);
+          retainedUploadIds.add(file.attachmentId);
           return true;
         });
         const capacity = Math.max(
@@ -2286,7 +2296,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }));
         const skippedFiles = filesToRestore.slice(capacity);
         unrestoredFileNames = skippedFiles.map((file) => file.name);
-        for (const file of skippedFiles) {
+        for (const file of [...duplicateFiles, ...skippedFiles]) {
           releasePersistedAttachmentUpload({
             id: file.id,
             environmentId,
@@ -2452,7 +2462,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // new (or switch threads) while encoding continues, and that deserves its
     // own entry.
     const snapshotKey = `${String(composerDraftTarget)} ${prompt} ${images
-      .map((image) => image.id)
+      .map((image) => `image:${image.id}`)
+      .concat(files.map((file) => `file:${file.id}`))
       .join(",")}`;
     if (stashInFlightRef.current.has(snapshotKey)) return;
     stashInFlightRef.current.add(snapshotKey);

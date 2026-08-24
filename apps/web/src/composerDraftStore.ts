@@ -3689,7 +3689,20 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const transferableFiles = source.files.filter(
               (file) => file.file !== null || file.uploadEnvironmentId === destinationEnvironmentId,
             );
-            const retainedFiles = source.files.filter((file) => !transferableFiles.includes(file));
+            const remainingAttachmentSlots = Math.max(
+              0,
+              PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
+                destination.images.length -
+                destination.files.length,
+            );
+            const movedImages = source.images.slice(0, remainingAttachmentSlots);
+            const movedImageIds = new Set(movedImages.map((image) => image.id));
+            const retainedImages = source.images.filter((image) => !movedImageIds.has(image.id));
+            const movedFiles = transferableFiles.slice(
+              0,
+              remainingAttachmentSlots - movedImages.length,
+            );
+            const retainedFiles = source.files.filter((file) => !movedFiles.includes(file));
             // Inline placeholders reference the source's terminal contexts,
             // which stay behind; re-anchor the moved prompt to whatever
             // contexts the destination already holds.
@@ -3700,15 +3713,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDestination: ComposerThreadDraftState = {
               ...destination,
               prompt: movedPrompt,
-              images: [...destination.images, ...source.images],
-              files: [...destination.files, ...transferableFiles],
+              images: [...destination.images, ...movedImages],
+              files: [...destination.files, ...movedFiles],
               nonPersistedImageIds: [
                 ...destination.nonPersistedImageIds,
-                ...source.nonPersistedImageIds,
+                ...source.nonPersistedImageIds.filter((imageId) => movedImageIds.has(imageId)),
               ],
               persistedAttachments: [
                 ...destination.persistedAttachments,
-                ...source.persistedAttachments,
+                ...source.persistedAttachments.filter((attachment) =>
+                  movedImageIds.has(attachment.id),
+                ),
               ],
             };
             // Same clearing shape as clearComposerPromptAndImages, but the
@@ -3717,10 +3732,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextSource: ComposerThreadDraftState = {
               ...source,
               prompt: ensureInlineTerminalContextPlaceholders("", source.terminalContexts.length),
-              images: [],
+              images: retainedImages,
               files: retainedFiles,
-              nonPersistedImageIds: [],
-              persistedAttachments: [],
+              nonPersistedImageIds: source.nonPersistedImageIds.filter(
+                (imageId) => !movedImageIds.has(imageId),
+              ),
+              persistedAttachments: source.persistedAttachments.filter(
+                (attachment) => !movedImageIds.has(attachment.id),
+              ),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextSource)) {

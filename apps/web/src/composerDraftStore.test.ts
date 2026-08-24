@@ -514,6 +514,38 @@ describe("composerDraftStore moveComposerPromptAndImages", () => {
     ]);
   });
 
+  it("keeps overflow attachments on the source when the destination is nearly full", () => {
+    const store = useComposerDraftStore.getState();
+    store.addImages(
+      destinationDraftId,
+      Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) =>
+        makeImage({
+          id: `destination-${index}`,
+          name: `destination-${index}.png`,
+          previewUrl: `blob:destination-${index}`,
+        }),
+      ),
+    );
+    store.addImages(sourceDraftId, [
+      makeImage({ id: "source-first", name: "first.png", previewUrl: "blob:first" }),
+      makeImage({ id: "source-second", name: "second.png", previewUrl: "blob:second" }),
+    ]);
+    store.addFiles(sourceDraftId, [makeFile("source-file")]);
+
+    store.moveComposerPromptAndImages(sourceDraftId, destinationDraftId);
+
+    expect(store.getComposerDraft(destinationDraftId)?.images).toHaveLength(
+      PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    );
+    expect(store.getComposerDraft(destinationDraftId)?.files).toEqual([]);
+    expect(store.getComposerDraft(sourceDraftId)?.images.map((image) => image.id)).toEqual([
+      "source-second",
+    ]);
+    expect(store.getComposerDraft(sourceDraftId)?.files.map((file) => file.id)).toEqual([
+      "source-file",
+    ]);
+  });
+
   it("is a no-op when source and destination are the same target", () => {
     const store = useComposerDraftStore.getState();
     store.setPrompt(sourceDraftId, "keep me");
