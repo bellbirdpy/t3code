@@ -25,7 +25,7 @@ function stashEntrySnippet(entry: PromptStashEntry): string {
   if (attachmentCount === 0) {
     return "(empty)";
   }
-  const label = fileCount > 0 ? "file" : "image";
+  const label = imageCount > 0 && fileCount > 0 ? "attachment" : fileCount > 0 ? "file" : "image";
   return `(${attachmentCount} ${label}${attachmentCount === 1 ? "" : "s"})`;
 }
 
@@ -183,8 +183,8 @@ export const ComposerStashMenu = memo(function ComposerStashMenu(props: {
                     </span>
                   ) : null}
                   {(entry.files?.length ?? 0) > 0 ? (
-                    <span className="flex shrink-0 items-center gap-1 text-secondary-label">
-                      <FileIcon className="size-4" />
+                    <span className="flex shrink-0 items-center gap-1 text-secondary-label text-xs">
+                      <FileIcon className="size-3.5 text-secondary-label" />
                       {entry.files!.length}
                     </span>
                   ) : null}
