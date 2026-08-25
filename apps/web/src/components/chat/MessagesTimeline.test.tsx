@@ -607,6 +607,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('aria-label="Download report.pdf"');
+    expect(markup).toContain("cursor-pointer");
     expect(markup).not.toContain("href=");
   });
 

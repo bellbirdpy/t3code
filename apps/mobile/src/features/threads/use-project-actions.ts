@@ -18,6 +18,7 @@ import type { DraftComposerAttachment } from "../../lib/composerImages";
 import {
   deletePendingMobileAttachments,
   uploadMobileAttachments,
+  withUploadedMobileAttachmentReferences,
 } from "../../lib/attachmentUpload";
 import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -42,6 +43,9 @@ export function useCreateProjectThread() {
       readonly interactionMode: ProviderInteractionMode;
       readonly initialMessageText: string;
       readonly initialAttachments: ReadonlyArray<DraftComposerAttachment>;
+      readonly onAttachmentsUploaded: (
+        attachments: ReadonlyArray<DraftComposerAttachment>,
+      ) => Promise<void>;
       /** Reuse identifiers from a queued pending task instead of minting new ones. */
       readonly turnMetadata?: TurnCommandMetadata;
     }) => {
@@ -67,6 +71,15 @@ export function useCreateProjectThread() {
           environmentId: input.project.environmentId,
           attachments: input.initialAttachments,
         });
+        if (uploaded.pendingAttachmentIds.length > 0) {
+          await input.onAttachmentsUploaded(
+            withUploadedMobileAttachmentReferences({
+              environmentId: input.project.environmentId,
+              attachments: input.initialAttachments,
+              uploadedAttachments: uploaded.attachments,
+            }),
+          );
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "An attachment could not upload.";
         setPendingConnectionError(message);
@@ -95,10 +108,6 @@ export function useCreateProjectThread() {
           worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
-      await deletePendingMobileAttachments(
-        input.project.environmentId,
-        uploaded.pendingAttachmentIds,
-      );
       if (AsyncResult.isFailure(result)) {
         const error = Cause.squash(result.cause);
         setPendingConnectionError(
@@ -106,6 +115,10 @@ export function useCreateProjectThread() {
         );
         return AsyncResult.failure(result.cause);
       }
+      await deletePendingMobileAttachments(
+        input.project.environmentId,
+        uploaded.pendingAttachmentIds,
+      );
       setPendingConnectionError(null);
       scheduleUnusedComposerAttachmentCleanup(input.initialAttachments);
 

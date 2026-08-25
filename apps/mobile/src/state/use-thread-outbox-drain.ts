@@ -15,9 +15,13 @@ import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { scopedThreadKey } from "../lib/scopedEntities";
+import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { deletePendingMobileAttachments, uploadMobileAttachments } from "../lib/attachmentUpload";
+import {
+  deletePendingMobileAttachments,
+  uploadMobileAttachments,
+  withUploadedMobileAttachmentReferences,
+} from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useServerConfigs, useThreadShells } from "./entities";
@@ -40,7 +44,13 @@ import {
   type ThreadOutboxCommandStage,
 } from "./thread-outbox-model";
 import { threadEnvironment } from "./threads";
-import { releaseUnusedComposerAttachmentFiles } from "./use-composer-drafts";
+import {
+  appendComposerDraftAttachments,
+  flushComposerDrafts,
+  getComposerDraftSnapshot,
+  mergeComposerDraftContent,
+  releaseUnusedComposerAttachmentFiles,
+} from "./use-composer-drafts";
 import { useAtomCommand } from "./use-atom-command";
 import {
   editingQueuedMessageIdsAtom,
@@ -95,26 +105,12 @@ async function persistQueuedAttachmentUploads(
   queuedMessage: QueuedThreadMessage,
   uploaded: Awaited<ReturnType<typeof uploadMobileAttachments>>,
 ): Promise<QueuedThreadMessage | null> {
-  let changed = false;
-  const attachments = queuedMessage.attachments.map((attachment, index) => {
-    const uploadedAttachment = uploaded.attachments[index];
-    if (attachment.type !== "file" || uploadedAttachment?.type !== "file") {
-      return attachment;
-    }
-    if (
-      attachment.uploadedAttachmentId === uploadedAttachment.id &&
-      attachment.uploadEnvironmentId === queuedMessage.environmentId
-    ) {
-      return attachment;
-    }
-    changed = true;
-    return {
-      ...attachment,
-      uploadedAttachmentId: uploadedAttachment.id,
-      uploadEnvironmentId: queuedMessage.environmentId,
-    };
+  const attachments = withUploadedMobileAttachmentReferences({
+    environmentId: queuedMessage.environmentId,
+    attachments: queuedMessage.attachments,
+    uploadedAttachments: uploaded.attachments,
   });
-  if (!changed) {
+  if (attachments.every((attachment, index) => attachment === queuedMessage.attachments[index])) {
     return queuedMessage;
   }
 
@@ -148,6 +144,35 @@ async function persistQueuedAttachmentUploads(
   }
 }
 
+async function restoreRejectedQueuedMessage(
+  queuedMessage: QueuedThreadMessage,
+  message: string,
+): Promise<boolean> {
+  const draftKey = queuedMessage.creation
+    ? `new-task:${scopedProjectKey(queuedMessage.environmentId, queuedMessage.creation.projectId)}`
+    : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
+  try {
+    await mergeComposerDraftContent(draftKey, { text: queuedMessage.text, attachments: [] });
+    const existingAttachmentIds = new Set(
+      getComposerDraftSnapshot(draftKey).attachments.map((attachment) => attachment.id),
+    );
+    appendComposerDraftAttachments(
+      draftKey,
+      queuedMessage.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id)),
+    );
+    await flushComposerDrafts();
+    await removeThreadOutboxMessage(queuedMessage);
+    setPendingConnectionError(message);
+    return true;
+  } catch (error) {
+    console.warn("[thread-outbox] failed to restore an undeliverable message", error);
+    setPendingConnectionError(
+      error instanceof Error ? error.message : "The unsent message could not be restored.",
+    );
+    return false;
+  }
+}
+
 export function useThreadOutboxDrain(): void {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -171,7 +196,6 @@ export function useThreadOutboxDrain(): void {
   const retryAttemptRef = useRef(new Map<MessageId, number>());
   const retryNotBeforeRef = useRef(new Map<MessageId, number>());
   const retryTimersRef = useRef(new Map<MessageId, ReturnType<typeof setTimeout>>());
-  const failedUploadMessagesRef = useRef(new Map<MessageId, QueuedThreadMessage>());
 
   useEffect(() => {
     ensureThreadOutboxLoaded();
@@ -295,11 +319,10 @@ export function useThreadOutboxDrain(): void {
       } catch (error) {
         console.warn("[thread-outbox] failed to upload attachments", error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
-          failedUploadMessagesRef.current.set(queuedMessage.messageId, queuedMessage);
-          setPendingConnectionError(
+          return restoreRejectedQueuedMessage(
+            queuedMessage,
             error instanceof Error ? error.message : "An attachment could not upload.",
           );
-          return true;
         }
         return false;
       }
@@ -361,11 +384,10 @@ export function useThreadOutboxDrain(): void {
       } catch (error) {
         console.warn("[thread-outbox] failed to upload attachments", error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
-          failedUploadMessagesRef.current.set(queuedMessage.messageId, queuedMessage);
-          setPendingConnectionError(
+          return restoreRejectedQueuedMessage(
+            queuedMessage,
             error instanceof Error ? error.message : "An attachment could not upload.",
           );
-          return true;
         }
         return false;
       }
@@ -416,9 +438,6 @@ export function useThreadOutboxDrain(): void {
       if (editingQueuedMessageIds[nextQueuedMessage.messageId]) {
         continue;
       }
-      if (failedUploadMessagesRef.current.get(nextQueuedMessage.messageId) === nextQueuedMessage) {
-        continue;
-      }
       if ((retryNotBeforeRef.current.get(nextQueuedMessage.messageId) ?? 0) > Date.now()) {
         continue;
       }
@@ -426,6 +445,7 @@ export function useThreadOutboxDrain(): void {
       const fileAttachments = nextQueuedMessage.attachments.filter(
         (attachment) => attachment.type === "file",
       );
+      let attachmentError: string | null = null;
       if (fileAttachments.length > 0) {
         const serverConfig = serverConfigs.get(nextQueuedMessage.environmentId);
         if (!serverConfig) {
@@ -433,16 +453,22 @@ export function useThreadOutboxDrain(): void {
         }
         const maxBytes = serverConfig.environment.capabilities.fileAttachments?.maxUploadBytes;
         if (maxBytes === undefined) {
-          setPendingConnectionError("This server does not support file attachments.");
-          continue;
+          attachmentError = "This server does not support file attachments.";
+        } else {
+          const oversized = fileAttachments.find((attachment) => attachment.sizeBytes > maxBytes);
+          if (oversized) {
+            attachmentError = `'${oversized.name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`;
+          }
         }
-        const oversized = fileAttachments.find((attachment) => attachment.sizeBytes > maxBytes);
-        if (oversized) {
-          setPendingConnectionError(
-            `'${oversized.name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`,
-          );
-          continue;
-        }
+      }
+      if (attachmentError !== null) {
+        beginDispatchingQueuedMessage(nextQueuedMessage.messageId);
+        void confirmThreadOutboxMessageQueued(nextQueuedMessage)
+          .then((queued) =>
+            queued ? restoreRejectedQueuedMessage(nextQueuedMessage, attachmentError) : true,
+          )
+          .finally(() => finishDispatchingQueuedMessage(nextQueuedMessage.messageId));
+        return;
       }
 
       const thread = findThread(threads, nextQueuedMessage);

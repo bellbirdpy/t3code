@@ -15,6 +15,30 @@ import { toUploadChatImageAttachments, type DraftComposerAttachment } from "./co
 
 export type UploadedMobileAttachment = UploadChatImageAttachment | ChatFileAttachment;
 
+/** Keep uploaded file ids on durable drafts so a later send can reuse their bytes. */
+export function withUploadedMobileAttachmentReferences(input: {
+  readonly environmentId: EnvironmentId;
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly uploadedAttachments: ReadonlyArray<UploadedMobileAttachment>;
+}): ReadonlyArray<DraftComposerAttachment> {
+  return input.attachments.map((attachment, index) => {
+    const uploaded = input.uploadedAttachments[index];
+    if (
+      attachment.type !== "file" ||
+      uploaded?.type !== "file" ||
+      (attachment.uploadedAttachmentId === uploaded.id &&
+        attachment.uploadEnvironmentId === input.environmentId)
+    ) {
+      return attachment;
+    }
+    return {
+      ...attachment,
+      uploadedAttachmentId: uploaded.id,
+      uploadEnvironmentId: input.environmentId,
+    };
+  });
+}
+
 export async function deletePendingMobileAttachments(
   environmentId: EnvironmentId,
   attachmentIds: ReadonlyArray<string>,

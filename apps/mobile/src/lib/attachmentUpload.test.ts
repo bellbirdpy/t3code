@@ -47,7 +47,10 @@ vi.mock("./uuid", () => ({
   uuidv4: () => "attachment-id",
 }));
 
-import { uploadMobileAttachments } from "./attachmentUpload";
+import {
+  uploadMobileAttachments,
+  withUploadedMobileAttachmentReferences,
+} from "./attachmentUpload";
 import type { DraftComposerAttachment } from "./composerImages";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -135,6 +138,38 @@ describe("uploadMobileAttachments", () => {
     expect(result.attachments[1]?.type).toBe("image");
     expect(result.pendingAttachmentIds).toEqual([
       "pending-00000000-0000-4000-8000-000000000001-pdf",
+    ]);
+  });
+
+  it("adds uploaded file references to durable drafts without changing images", () => {
+    expect(
+      withUploadedMobileAttachmentReferences({
+        environmentId,
+        attachments: [file, image],
+        uploadedAttachments: [
+          {
+            type: "file",
+            id: "pending-existing-pdf",
+            name: file.name,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+          },
+          {
+            type: "image",
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            dataUrl: image.dataUrl,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        ...file,
+        uploadedAttachmentId: "pending-existing-pdf",
+        uploadEnvironmentId: environmentId,
+      },
+      image,
     ]);
   });
 

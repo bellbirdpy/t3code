@@ -50,6 +50,7 @@ import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
   clearComposerDraftContent,
+  flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
@@ -785,6 +786,10 @@ export function NewTaskDraftScreen(props: {
       interactionMode,
       initialMessageText,
       initialAttachments: draft.attachments,
+      onAttachmentsUploaded: async (attachments) => {
+        flow.replaceAttachments(attachments);
+        await flushComposerDrafts();
+      },
       ...(editingPendingTask
         ? {
             turnMetadata: {

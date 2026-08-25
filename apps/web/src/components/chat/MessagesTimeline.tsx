@@ -1089,7 +1089,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   type="button"
                   aria-label={`Download ${file.name}`}
                   onClick={() => ctx.onFileDownload(file)}
-                  className="flex min-w-0 items-center gap-2 py-1 text-sm hover:underline"
+                  className="flex min-w-0 cursor-pointer items-center gap-2 py-1 text-sm hover:underline"
                 >
                   {content}
                 </button>
