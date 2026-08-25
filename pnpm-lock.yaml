@@ -72,6 +72,7 @@ overrides:
   '@types/node': 24.12.4
   effect: 4.0.0-beta.103
   expo-modules-jsi: 56.0.10
+  expo-sharing: 56.0.18
   expo-sharing>@expo/config-plugins: 56.0.9
   expo-sharing>@expo/config-types: 56.0.6
   vite: npm:@voidzero-dev/vite-plus-core@0.2.2
@@ -359,7 +360,7 @@ importers:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)
       expo-sharing:
-        specifier: ~56.0.18
+        specifier: 56.0.18
         version: 56.0.18(patch_hash=0d670b03ce7ea56c3ca7805468674ee195cf176938a401bf20e80da9ff309cfd)(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3)(typescript@6.0.3)
       expo-splash-screen:
         specifier: ~56.0.10
