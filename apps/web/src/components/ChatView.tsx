@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  type ChatFileAttachment,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
@@ -377,7 +378,10 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
+import { assetEnvironment } from "../state/assets";
+import { readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button } from "./ui/button";
 import {
   AlertDialog,
@@ -398,7 +402,7 @@ import {
   resolveServerSelfUpdateCapability,
   serverUpdateGuidance,
 } from "../versionSkew";
-import { useAssetUrls } from "../assets/assetUrls";
+import { resolveAssetUrl, useAssetUrls } from "../assets/assetUrls";
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]";
@@ -1299,6 +1303,9 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+  });
   const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -2497,11 +2504,47 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, []);
   const serverMessages = activeThread?.messages;
+  const downloadFileAttachment = useCallback(
+    async (attachment: ChatFileAttachment) => {
+      const connection = readPreparedConnection(environmentId);
+      if (!connection) {
+        toastManager.add({ type: "error", title: "The environment is not connected." });
+        return;
+      }
+
+      const result = await createAttachmentAssetUrl({
+        environmentId,
+        input: { resource: { _tag: "attachment", attachmentId: attachment.id } },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: `Could not download ${attachment.name}`,
+          description: error instanceof Error ? error.message : "The attachment is unavailable.",
+        });
+        return;
+      }
+
+      const url = resolveAssetUrl(connection.httpBaseUrl, result.value.relativeUrl);
+      if (!url) {
+        toastManager.add({ type: "error", title: `Could not download ${attachment.name}` });
+        return;
+      }
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = attachment.name;
+      anchor.click();
+    },
+    [createAttachmentAssetUrl, environmentId],
+  );
   const serverAttachmentIds = useMemo(() => {
     const attachmentIds = new Set<string>();
     for (const message of serverMessages ?? []) {
       for (const attachment of message.attachments ?? []) {
-        attachmentIds.add(attachment.id);
+        if (attachment.type === "image") {
+          attachmentIds.add(attachment.id);
+        }
       }
     }
     return [...attachmentIds];
@@ -6957,6 +7000,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onRevertUserMessage={onRevertUserMessage}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
+                onFileDownload={downloadFileAttachment}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}

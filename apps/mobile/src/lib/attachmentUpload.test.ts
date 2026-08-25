@@ -138,6 +138,38 @@ describe("uploadMobileAttachments", () => {
     ]);
   });
 
+  it("reuses a pending file upload from a previous outbox attempt", async () => {
+    const previouslyUploaded = {
+      ...file,
+      uploadedAttachmentId: "pending-existing-pdf",
+      uploadEnvironmentId: environmentId,
+    };
+
+    await expect(
+      uploadMobileAttachments({ environmentId, attachments: [previouslyUploaded, image] }),
+    ).resolves.toEqual({
+      attachments: [
+        {
+          type: "file",
+          id: "pending-existing-pdf",
+          name: "report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 42,
+        },
+        {
+          type: "image",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          dataUrl: "data:image/png;base64,YWJj",
+        },
+      ],
+      pendingAttachmentIds: ["pending-existing-pdf"],
+    });
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(mocks.runAtomCommand).not.toHaveBeenCalled();
+  });
+
   it("removes pending uploads when the native HTTP request fails", async () => {
     mocks.upload.mockResolvedValue({ status: 500, body: "failed", headers: {} });
 
@@ -150,6 +182,30 @@ describe("uploadMobileAttachments", () => {
       {
         environmentId,
         input: { attachmentId: "pending-00000000-0000-4000-8000-000000000001-pdf" },
+      },
+      expect.anything(),
+    );
+  });
+
+  it("keeps a previously persisted upload when a later attachment fails", async () => {
+    const previouslyUploaded = {
+      ...file,
+      id: "file-existing",
+      uploadedAttachmentId: "pending-existing-pdf",
+      uploadEnvironmentId: environmentId,
+    };
+    mocks.upload.mockResolvedValue({ status: 500, body: "failed", headers: {} });
+
+    await expect(
+      uploadMobileAttachments({ environmentId, attachments: [previouslyUploaded, file] }),
+    ).rejects.toThrow("Upload failed for 'report.pdf' (500).");
+
+    expect(mocks.runAtomCommand).not.toHaveBeenCalledWith(
+      expect.anything(),
+      mocks.removeUpload,
+      {
+        environmentId,
+        input: { attachmentId: "pending-existing-pdf" },
       },
       expect.anything(),
     );

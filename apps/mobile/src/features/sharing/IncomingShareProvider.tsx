@@ -85,9 +85,9 @@ async function readBase64(uri: string): Promise<string> {
   return new File(uri).base64();
 }
 
-async function readFileSize(uri: string): Promise<number> {
+async function readFileSize(uri: string): Promise<number | null> {
   const { File } = await import("expo-file-system");
-  return new File(uri).size ?? 0;
+  return new File(uri).size ?? null;
 }
 
 async function removeOwnedFile(uri: string): Promise<void> {

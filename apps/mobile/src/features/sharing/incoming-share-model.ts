@@ -51,7 +51,43 @@ export interface IncomingShareFileReader {
   readonly readBase64: (uri: string) => Promise<string>;
   readonly removeOwnedFile: (uri: string) => Promise<void> | void;
   readonly persistFile?: (uri: string, name: string) => Promise<string>;
-  readonly readSize?: (uri: string) => Promise<number>;
+  readonly readSize?: (uri: string) => Promise<number | null>;
+}
+
+function attachmentLimitLabel(maxBytes: number): string {
+  return `${Math.round(maxBytes / (1024 * 1024))} MB`;
+}
+
+/** Apply the destination server's file support after the user chooses a project. */
+export function selectIncomingShareAttachments(input: {
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly maxFileAttachmentBytes: number | null;
+}): {
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly warnings: ReadonlyArray<string>;
+} {
+  const attachments: DraftComposerAttachment[] = [];
+  const warnings: string[] = [];
+
+  for (const attachment of input.attachments) {
+    if (attachment.type === "image") {
+      attachments.push(attachment);
+      continue;
+    }
+    if (input.maxFileAttachmentBytes === null) {
+      warnings.push(`'${attachment.name}' was skipped because this server does not support files.`);
+      continue;
+    }
+    if (attachment.sizeBytes > input.maxFileAttachmentBytes) {
+      warnings.push(
+        `'${attachment.name}' exceeds the ${attachmentLimitLabel(input.maxFileAttachmentBytes)} attachment limit.`,
+      );
+      continue;
+    }
+    attachments.push(attachment);
+  }
+
+  return { attachments, warnings };
 }
 
 function sharedText(payloads: ReadonlyArray<SharePayload>): string {
@@ -176,19 +212,39 @@ export async function buildIncomingShareDraft(input: {
         warnings.push("One shared file could not be read.");
         continue;
       }
+      let persistedFileUri: string | undefined;
       try {
-        const sizeBytes = resolved?.contentSize ?? (await input.fileReader.readSize?.(uri)) ?? 0;
+        let sizeBytes = resolved?.contentSize ?? (await input.fileReader.readSize?.(uri)) ?? null;
+        if (sizeBytes === null && input.fileReader.persistFile) {
+          persistedFileUri = await input.fileReader.persistFile(uri, name);
+          sizeBytes = (await input.fileReader.readSize?.(persistedFileUri)) ?? null;
+        }
+        if (sizeBytes === null) {
+          warnings.push(`The size of '${name}' could not be determined.`);
+          if (persistedFileUri) {
+            await releaseOwnedFiles(input.fileReader, [persistedFileUri]);
+          }
+          continue;
+        }
         if (sizeBytes <= 0) {
           warnings.push(`'${name}' is empty or could not be read.`);
+          if (persistedFileUri) {
+            await releaseOwnedFiles(input.fileReader, [persistedFileUri]);
+          }
           continue;
         }
         if (sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
-          warnings.push(`'${name}' exceeds the 50 MB attachment limit.`);
+          warnings.push(
+            `'${name}' exceeds the ${attachmentLimitLabel(PROVIDER_SEND_TURN_MAX_FILE_BYTES)} attachment limit.`,
+          );
+          if (persistedFileUri) {
+            await releaseOwnedFiles(input.fileReader, [persistedFileUri]);
+          }
           continue;
         }
-        const fileUri = input.fileReader.persistFile
-          ? await input.fileReader.persistFile(uri, name)
-          : uri;
+        const fileUri =
+          persistedFileUri ??
+          (input.fileReader.persistFile ? await input.fileReader.persistFile(uri, name) : uri);
         attachments.push({
           id: `${input.id}:file:${index}`,
           type: "file",

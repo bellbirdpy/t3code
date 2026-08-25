@@ -1,20 +1,28 @@
 import {
+  AssetAttachmentNotFoundError,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   type ChatAttachment,
   type EnvironmentId,
 } from "@t3tools/contracts";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import {
+  executeAtomQuery,
+  runAtomCommand,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import * as Schema from "effect/Schema";
 import { create } from "zustand";
 
 import type { ComposerFileAttachment, ComposerImageAttachment } from "../composerDraftStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { assetEnvironment } from "../state/assets";
 import { attachmentEnvironment } from "../state/attachments";
 import { readPreparedConnection } from "../state/session";
 import type { AttachmentUploadState, ReadyAttachmentUpload } from "./attachmentUploadState";
 
 const MAX_UPLOADS_PER_ENVIRONMENT = 3;
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
+const isAssetAttachmentNotFound = Schema.is(AssetAttachmentNotFoundError);
 
 interface AttachmentUploadStore {
   readonly uploadsByImageId: Readonly<Record<string, AttachmentUploadState>>;
@@ -28,6 +36,7 @@ interface UploadJob {
   readonly image: ComposerImageAttachment | ComposerFileAttachment;
   readonly environmentId: EnvironmentId;
   readonly previous?: ReadyAttachmentUpload;
+  readonly persistedAttachmentId?: string;
   readonly settled: Promise<void>;
   resolveSettled: () => void;
   attachmentId: string | null;
@@ -101,6 +110,48 @@ function uploadBytes(input: {
 }
 
 async function runUpload(job: UploadJob): Promise<void> {
+  if (job.persistedAttachmentId) {
+    const result = await executeAtomQuery(
+      appAtomRegistry,
+      assetEnvironment.createUrl({
+        environmentId: job.environmentId,
+        input: { resource: { _tag: "attachment", attachmentId: job.persistedAttachmentId } },
+      }),
+      { reportFailure: false, reportDefect: false },
+    );
+    if (job.cancelled) {
+      return;
+    }
+    if (result._tag === "Success") {
+      setUploadState(job.image.id, {
+        status: "ready",
+        environmentId: job.environmentId,
+        attachmentId: job.persistedAttachmentId,
+      });
+      return;
+    }
+
+    const error = squashAtomCommandFailure(result);
+    const missing =
+      isAssetAttachmentNotFound(error) ||
+      (typeof error === "object" &&
+        error !== null &&
+        "_tag" in error &&
+        error._tag === "AssetAttachmentNotFoundError");
+    if (!missing || !job.image.file) {
+      setUploadState(job.image.id, {
+        status: "failed",
+        environmentId: job.environmentId,
+        attachmentId: job.persistedAttachmentId,
+        reason: missing
+          ? "Uploaded file expired. Remove it and attach it again."
+          : "Uploaded file could not be verified. Retry when the server reconnects.",
+        ...(job.previous ? { previous: job.previous } : {}),
+      });
+      return;
+    }
+  }
+
   const mimeType =
     job.image.type === "file"
       ? job.image.mimeType.toLowerCase()
@@ -277,18 +328,6 @@ export function startAttachmentUpload(input: {
     return;
   }
   if (
-    input.image.type === "file" &&
-    input.image.uploadEnvironmentId === input.environmentId &&
-    input.image.uploadedAttachmentId
-  ) {
-    setUploadState(input.image.id, {
-      status: "ready",
-      environmentId: input.environmentId,
-      attachmentId: input.image.uploadedAttachmentId,
-    });
-    return;
-  }
-  if (
     existing &&
     "previous" in existing &&
     existing.previous?.environmentId === input.environmentId
@@ -313,9 +352,17 @@ export function startAttachmentUpload(input: {
     image: input.image,
     environmentId: input.environmentId,
     ...(previous ? { previous } : {}),
+    ...(input.image.type === "file" &&
+    input.image.uploadEnvironmentId === input.environmentId &&
+    input.image.uploadedAttachmentId
+      ? { persistedAttachmentId: input.image.uploadedAttachmentId }
+      : {}),
     settled,
     resolveSettled,
-    attachmentId: null,
+    attachmentId:
+      input.image.type === "file" && input.image.uploadEnvironmentId === input.environmentId
+        ? (input.image.uploadedAttachmentId ?? null)
+        : null,
     cancelled: false,
     abort: null,
   };

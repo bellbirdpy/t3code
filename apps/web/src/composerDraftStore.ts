@@ -563,12 +563,10 @@ interface ComposerDraftStoreState {
    */
   clearComposerPromptAndImages: (threadRef: ComposerThreadTarget) => void;
   /**
-   * Moves the prompt text and attachments from one composer target to
-   * another. Used when a draft changes project: the new project gets its own
-   * draft session and the typed content follows it. Session-bound extras
-   * (terminal / element contexts, preview annotations, review comments) stay
-   * on the source — they reference sessions of the source thread that the
-   * destination cannot use.
+   * Moves prompt text and transferable attachments into another composer.
+   * Attachments over the destination limit and uploaded files that belong to
+   * another environment stay in the source draft. Terminal and element
+   * context, preview annotations, and review comments also stay in the source.
    */
   moveComposerPromptAndImages: (from: ComposerThreadTarget, to: ComposerThreadTarget) => void;
 }

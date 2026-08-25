@@ -58,10 +58,26 @@ export async function uploadMobileAttachments(input: {
   const { File, UploadType } = await import("expo-file-system");
   const uploadedAttachments: UploadedMobileAttachment[] = [];
   const pendingAttachmentIds: string[] = [];
+  const createdAttachmentIds: string[] = [];
   try {
     for (const attachment of input.attachments) {
       if (attachment.type === "image") {
         uploadedAttachments.push(...toUploadChatImageAttachments([attachment]));
+        continue;
+      }
+
+      if (
+        attachment.uploadEnvironmentId === input.environmentId &&
+        attachment.uploadedAttachmentId
+      ) {
+        pendingAttachmentIds.push(attachment.uploadedAttachmentId);
+        uploadedAttachments.push({
+          type: "file",
+          id: attachment.uploadedAttachmentId,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        });
         continue;
       }
 
@@ -83,6 +99,7 @@ export async function uploadMobileAttachments(input: {
         throw Cause.squash(issued.cause);
       }
       pendingAttachmentIds.push(issued.value.attachmentId);
+      createdAttachmentIds.push(issued.value.attachmentId);
 
       const url = resolveAssetUrl(connection.value.httpBaseUrl, issued.value.relativeUrl);
       if (!url) {
@@ -107,7 +124,7 @@ export async function uploadMobileAttachments(input: {
     }
     return { attachments: uploadedAttachments, pendingAttachmentIds };
   } catch (error) {
-    await deletePendingMobileAttachments(input.environmentId, pendingAttachmentIds);
+    await deletePendingMobileAttachments(input.environmentId, createdAttachmentIds);
     throw error;
   }
 }

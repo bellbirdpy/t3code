@@ -585,6 +585,31 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('alt="report.pdf"');
   });
 
+  it("renders a file download button without creating its URL in advance", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
+      message: {
+        ...buildUserTimelineEntry("Read the report.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "attachment-report-pdf",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain('aria-label="Download report.pdf"');
+    expect(markup).not.toContain("href=");
+  });
+
   it("keeps reserved end space when tool work starts while reading history", () => {
     const turnId = TurnId.make("turn-with-active-tool");
     const firstEntry = buildUserTimelineEntry("Run the command.");

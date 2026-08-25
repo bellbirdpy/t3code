@@ -1,4 +1,5 @@
 import {
+  type ChatFileAttachment,
   type EnvironmentId,
   type MessageId,
   type ScopedThreadRef,
@@ -14,6 +15,7 @@ import {
 
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
+const NOOP_DOWNLOAD_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
   createContext,
@@ -144,6 +146,7 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onFileDownload: (attachment: ChatFileAttachment) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
@@ -222,6 +225,7 @@ interface MessagesTimelineProps {
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onFileDownload?: (attachment: ChatFileAttachment) => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -267,6 +271,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRevertUserMessage,
   isRevertingCheckpoint,
   onImageExpand,
+  onFileDownload = NOOP_DOWNLOAD_ATTACHMENT,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -525,6 +530,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onFileDownload,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -541,6 +547,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onFileDownload,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -1064,7 +1071,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 <>
                   <FileIcon className="size-4 shrink-0 text-secondary-label" />
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                  {file.previewUrl ? <DownloadIcon className="size-4 shrink-0" /> : null}
+                  <DownloadIcon className="size-4 shrink-0" />
                 </>
               );
               return file.previewUrl ? (
@@ -1077,9 +1084,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   {content}
                 </a>
               ) : (
-                <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+                <button
+                  key={file.id}
+                  type="button"
+                  aria-label={`Download ${file.name}`}
+                  onClick={() => ctx.onFileDownload(file)}
+                  className="flex min-w-0 items-center gap-2 py-1 text-sm hover:underline"
+                >
                   {content}
-                </div>
+                </button>
               );
             })}
           </div>

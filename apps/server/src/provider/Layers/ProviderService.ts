@@ -729,13 +729,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    // Adapters inline attachment pixels into the model prompt, but the model's
-    // tools cannot dereference pixels. Appending the on-disk path is what lets
-    // a turn like "include this screenshot in the PR" copy the actual file.
-    // This runs after schema decode, so the appended lines are exempt from the
-    // PROVIDER_SEND_TURN_MAX_INPUT_CHARS check; attachment count is capped, so
-    // the overhead is bounded. Unresolvable ids are skipped here and surface
-    // as adapter errors when the file is read for inlining.
+    // Images are passed to provider adapters and every attachment gets an
+    // on-disk path in the prompt. Generic files reach the agent only through
+    // that path. Missing images can still fail while an adapter reads them;
+    // file references were already checked when the turn was normalized.
     const attachmentPathLines = attachments.flatMap((attachment) => {
       const attachmentPath = resolveAttachmentPath({
         attachmentsDir: serverConfig.attachmentsDir,

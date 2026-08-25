@@ -3,6 +3,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  type EnvironmentId,
   type UploadChatImageAttachment,
 } from "@t3tools/contracts";
 import type { PickMultipleFilesResult } from "expo-file-system";
@@ -22,6 +23,8 @@ export interface DraftComposerFileAttachment {
   readonly mimeType: string;
   readonly sizeBytes: number;
   readonly fileUri: string;
+  readonly uploadedAttachmentId?: string;
+  readonly uploadEnvironmentId?: EnvironmentId;
 }
 
 export type DraftComposerAttachment = DraftComposerImageAttachment | DraftComposerFileAttachment;

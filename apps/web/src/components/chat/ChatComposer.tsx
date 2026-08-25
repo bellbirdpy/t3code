@@ -13,7 +13,6 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import {
-  isProviderSendTurnSupportedImageMimeType,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -75,11 +74,11 @@ import {
   type ComposerTaskStep,
   type ComposerTasksProgress,
 } from "./ComposerTasksBadge";
+import { compressImageForStash, prepareImageForAttachment } from "../../lib/imageCompression";
 import {
-  compressImageForStash,
-  isHeicImageFile,
-  prepareImageForAttachment,
-} from "../../lib/imageCompression";
+  classifyComposerAttachmentFile,
+  shouldHandleComposerAttachmentPaste,
+} from "./composerAttachmentFiles";
 import {
   readAttachmentUpload,
   releaseAttachmentUpload,
@@ -2785,10 +2784,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
         break;
       }
-      if (
-        isHeicImageFile(file) ||
-        (file.type.startsWith("image/") && isProviderSendTurnSupportedImageMimeType(file.type))
-      ) {
+      const attachmentKind = classifyComposerAttachmentFile(file);
+      if (attachmentKind === "unsupported-image") {
+        error = `'${file.name}' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.`;
+        continue;
+      }
+      if (attachmentKind === "image") {
         acceptedImages.push(file);
       } else {
         if (maxFileAttachmentBytes === null) {
@@ -2882,7 +2883,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) return;
+    if (
+      files.length === 0 ||
+      !activeThreadId ||
+      pendingUserInputs.length > 0 ||
+      !shouldHandleComposerAttachmentPaste({
+        files,
+        plainText: event.clipboardData.getData("text/plain"),
+        maxFileAttachmentBytes,
+        remainingAttachmentSlots:
+          PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
+          composerImagesRef.current.length -
+          composerFilesRef.current.length -
+          (pendingImageCompressionsRef.current.get(activeThreadId) ?? 0),
+      })
+    ) {
+      return;
+    }
     event.preventDefault();
     void addComposerAttachments(files);
   };

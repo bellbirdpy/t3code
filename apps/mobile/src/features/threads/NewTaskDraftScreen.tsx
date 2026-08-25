@@ -53,6 +53,7 @@ import {
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
+  scheduleUnusedComposerAttachmentCleanup,
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
@@ -70,6 +71,7 @@ import {
   resolveNewTaskWorkspaceLabel,
 } from "./new-task-context-presentation";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
+import { selectIncomingShareAttachments } from "../sharing/incoming-share-model";
 
 function NewTaskWorkspaceIcon(props: {
   readonly workspaceMode: "local" | "worktree";
@@ -427,6 +429,13 @@ export function NewTaskDraftScreen(props: {
       return;
     }
 
+    if (
+      incomingShare.attachments.some((attachment) => attachment.type === "file") &&
+      selectedEnvironmentServerConfig === null
+    ) {
+      return;
+    }
+
     if (alertedUnavailableIncomingShareIdRef.current === shareId) {
       alertedUnavailableIncomingShareIdRef.current = null;
     }
@@ -440,6 +449,12 @@ export function NewTaskDraftScreen(props: {
     activeShareImportTokenRef.current = importToken;
     setImportingShareKey(importKey);
     void (async () => {
+      const selectedAttachments = selectIncomingShareAttachments({
+        attachments: incomingShare.attachments,
+        maxFileAttachmentBytes:
+          selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments
+            ?.maxUploadBytes ?? null,
+      });
       await reserveShare(shareId, {
         environmentId: String(destinationProject.environmentId),
         projectId: String(destinationProject.id),
@@ -456,7 +471,7 @@ export function NewTaskDraftScreen(props: {
       needsDraftRestore = true;
       const { skippedAttachmentCount } = await mergeComposerDraftContent(draftKey, {
         text: incomingShare.text,
-        attachments: incomingShare.attachments,
+        attachments: selectedAttachments.attachments,
         sourceShareId: shareId,
       });
       if (
@@ -473,7 +488,11 @@ export function NewTaskDraftScreen(props: {
       if (!shareImportMountedRef.current || activeShareImportTokenRef.current !== importToken) {
         return;
       }
-      const warnings = [...incomingShare.warnings];
+      const rejectedAttachments = incomingShare.attachments.filter(
+        (attachment) => !selectedAttachments.attachments.includes(attachment),
+      );
+      scheduleUnusedComposerAttachmentCleanup(rejectedAttachments);
+      const warnings = [...incomingShare.warnings, ...selectedAttachments.warnings];
       if (skippedAttachmentCount > 0) {
         warnings.push(
           `${skippedAttachmentCount} shared file${skippedAttachmentCount === 1 ? " was" : "s were"} skipped because this draft reached the attachment limit.`,
@@ -583,6 +602,7 @@ export function NewTaskDraftScreen(props: {
     props.initialProjectRef?.projectId,
     releaseShareReservation,
     reserveShare,
+    selectedEnvironmentServerConfig,
     selectedProject,
     shareImportAttempt,
   ]);

@@ -6,7 +6,11 @@ import {
 } from "@t3tools/contracts";
 import type { ResolvedSharePayload, SharePayload } from "expo-sharing";
 
-import { buildIncomingShareDraft, hasIncomingShareContent } from "./incoming-share-model";
+import {
+  buildIncomingShareDraft,
+  hasIncomingShareContent,
+  selectIncomingShareAttachments,
+} from "./incoming-share-model";
 
 describe("incoming native shares", () => {
   it("converts shared text, URLs, and images into a durable composer draft", async () => {
@@ -196,6 +200,95 @@ describe("incoming native shares", () => {
 
     expect(result.attachments).toEqual([]);
     expect(result.warnings).toEqual(["'empty.txt' is empty or could not be read."]);
+  });
+
+  it("reads an Android content URI's size after copying it into app-owned storage", async () => {
+    const file: SharePayload = {
+      shareType: "file",
+      value: "content://shared/report",
+      mimeType: "application/pdf",
+    };
+    const persistFile = vi.fn(async () => "file:///documents/report.pdf");
+    const readSize = vi.fn(async (uri: string) => (uri.startsWith("content:") ? null : 42));
+
+    const result = await buildIncomingShareDraft({
+      id: "share-android-report",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [file],
+      resolvedPayloads: [],
+      fileReader: {
+        readBase64: async () => "unused",
+        persistFile,
+        readSize,
+        removeOwnedFile: async () => undefined,
+      },
+    });
+
+    expect(result.attachments).toEqual([
+      {
+        id: "share-android-report:file:0",
+        type: "file",
+        name: "report",
+        mimeType: "application/pdf",
+        sizeBytes: 42,
+        fileUri: "file:///documents/report.pdf",
+      },
+    ]);
+    expect(readSize.mock.calls).toEqual([
+      ["content://shared/report"],
+      ["file:///documents/report.pdf"],
+    ]);
+  });
+
+  it("keeps images and rejects shared files on servers without file support", () => {
+    const image = {
+      id: "image-1",
+      type: "image" as const,
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      dataUrl: "data:image/png;base64,YWJj",
+      previewUri: "data:image/png;base64,YWJj",
+    };
+    const file = {
+      id: "file-1",
+      type: "file" as const,
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      fileUri: "file:///documents/report.pdf",
+    };
+
+    expect(
+      selectIncomingShareAttachments({
+        attachments: [image, file],
+        maxFileAttachmentBytes: null,
+      }),
+    ).toEqual({
+      attachments: [image],
+      warnings: ["'report.pdf' was skipped because this server does not support files."],
+    });
+  });
+
+  it("uses the destination server's attachment limit in share warnings", () => {
+    const file = {
+      id: "file-1",
+      type: "file" as const,
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 6 * 1024 * 1024,
+      fileUri: "file:///documents/report.pdf",
+    };
+
+    expect(
+      selectIncomingShareAttachments({
+        attachments: [file],
+        maxFileAttachmentBytes: 5 * 1024 * 1024,
+      }),
+    ).toEqual({
+      attachments: [],
+      warnings: ["'report.pdf' exceeds the 5 MB attachment limit."],
+    });
   });
 
   it("releases every temporary file when a share exceeds the attachment limit", async () => {

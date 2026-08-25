@@ -4,17 +4,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { ComposerFileAttachment, ComposerImageAttachment } from "../composerDraftStore";
 
 const mocks = vi.hoisted(() => ({
+  createAssetUrl: vi.fn(),
   createUploadUrl: Symbol("create-upload-url"),
+  executeAtomQuery: vi.fn(),
   removeUpload: Symbol("remove-upload"),
   runAtomCommand: vi.fn(),
   readPreparedConnection: vi.fn(),
 }));
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  executeAtomQuery: mocks.executeAtomQuery,
   runAtomCommand: mocks.runAtomCommand,
+  squashAtomCommandFailure: (result: { readonly error: unknown }) => result.error,
 }));
 
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
+
+vi.mock("../state/assets", () => ({
+  assetEnvironment: { createUrl: mocks.createAssetUrl },
+}));
 
 vi.mock("../state/attachments", () => ({
   attachmentEnvironment: {
@@ -128,6 +136,10 @@ function makeFile(id: string): ComposerFileAttachment {
 describe("attachmentUploadQueue", () => {
   beforeEach(() => {
     TestXmlHttpRequest.requests = [];
+    mocks.createAssetUrl.mockReset();
+    mocks.createAssetUrl.mockImplementation((target: unknown) => target);
+    mocks.executeAtomQuery.mockReset();
+    mocks.executeAtomQuery.mockResolvedValue({ _tag: "Success", value: {} });
     mocks.runAtomCommand.mockReset();
     mocks.readPreparedConnection.mockReset();
     mocks.readPreparedConnection.mockReturnValue({ httpBaseUrl: "https://environment.test/" });
@@ -239,7 +251,7 @@ describe("attachmentUploadQueue", () => {
     ]);
   });
 
-  it("restores an uploaded file reference without reading its original bytes", () => {
+  it("verifies an uploaded file reference before restoring it", async () => {
     const file: ComposerFileAttachment = {
       ...makeFile("restored"),
       file: null,
@@ -248,13 +260,97 @@ describe("attachmentUploadQueue", () => {
     };
 
     startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    await awaitAttachmentUploads([file.id]);
 
     expect(readAttachmentUpload(file.id)).toEqual({
       status: "ready",
       environmentId: firstEnvironment,
       attachmentId: "pending-restored-pdf",
     });
+    expect(mocks.createAssetUrl).toHaveBeenCalledWith({
+      environmentId: firstEnvironment,
+      input: { resource: { _tag: "attachment", attachmentId: "pending-restored-pdf" } },
+    });
     expect(TestXmlHttpRequest.requests).toHaveLength(0);
+  });
+
+  it("marks an expired restored file as failed when its original bytes are unavailable", async () => {
+    const file: ComposerFileAttachment = {
+      ...makeFile("expired"),
+      file: null,
+      uploadedAttachmentId: "pending-expired-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    mocks.executeAtomQuery.mockResolvedValueOnce({
+      _tag: "Failure",
+      error: { _tag: "AssetAttachmentNotFoundError" },
+    });
+
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    await awaitAttachmentUploads([file.id]);
+
+    expect(readAttachmentUpload(file.id)).toMatchObject({
+      status: "failed",
+      reason: "Uploaded file expired. Remove it and attach it again.",
+    });
+    expect(TestXmlHttpRequest.requests).toHaveLength(0);
+  });
+
+  it("uploads the original file again when its persisted server upload expired", async () => {
+    const file: ComposerFileAttachment = {
+      ...makeFile("recoverable"),
+      uploadedAttachmentId: "pending-expired-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    mocks.executeAtomQuery.mockResolvedValueOnce({
+      _tag: "Failure",
+      error: { _tag: "AssetAttachmentNotFoundError" },
+    });
+
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const settled = awaitAttachmentUploads([file.id]);
+    TestXmlHttpRequest.requests[0]!.complete();
+    await settled;
+
+    expect(readAttachmentUpload(file.id)).toMatchObject({
+      status: "ready",
+      attachmentId: "pending-environment-1-recoverable.pdf",
+    });
+  });
+
+  it("removes a persisted upload when its draft is discarded during verification", async () => {
+    const file: ComposerFileAttachment = {
+      ...makeFile("checking"),
+      file: null,
+      uploadedAttachmentId: "pending-checking-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    let resolveVerification: (result: {
+      readonly _tag: "Success";
+      readonly value: object;
+    }) => void = () => {};
+    mocks.executeAtomQuery.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveVerification = resolve;
+      }),
+    );
+
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    releaseAttachmentUpload(file.id);
+    resolveVerification({ _tag: "Success", value: {} });
+
+    expect(mocks.runAtomCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      mocks.removeUpload,
+      {
+        environmentId: firstEnvironment,
+        input: { attachmentId: "pending-checking-pdf" },
+      },
+      expect.anything(),
+    );
   });
 
   it("deletes a persisted server upload even when browser upload state is gone", () => {

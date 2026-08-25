@@ -92,6 +92,8 @@ describe("thread outbox", () => {
           mimeType: "application/pdf",
           sizeBytes: 42,
           fileUri: "file:///documents/report.pdf",
+          uploadedAttachmentId: "pending-report-pdf",
+          uploadEnvironmentId: EnvironmentId.make("environment-1"),
         },
       ],
     } satisfies QueuedThreadMessage;
