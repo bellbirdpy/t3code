@@ -243,6 +243,7 @@ export async function releaseUnusedComposerAttachmentFiles(
   }
 
   await flushComposerDrafts();
+  await threadOutboxManager.load();
   await flushThreadOutbox();
 
   const drafts = Object.values(appAtomRegistry.get(composerDraftsAtom));
@@ -626,12 +627,6 @@ export async function mergeComposerDraftContent(
     appAtomRegistry.set(composerDraftsAtom, next);
   }
   await persistenceQueue.run(() => writePersistedComposerDrafts(next));
-  scheduleUnusedComposerAttachmentCleanup(
-    content.attachments.filter(
-      (attachment) =>
-        !currentAttachmentIds.has(attachment.id) && !nextAttachmentIds.has(attachment.id),
-    ),
-  );
   return { skippedAttachmentCount };
 }
 

@@ -3,7 +3,9 @@ import * as Option from "effect/Option";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
+  createAssetUrl: vi.fn(),
   createUploadUrl: Symbol("create-upload-url"),
+  executeAtomQuery: vi.fn(),
   removeUpload: Symbol("remove-upload"),
   preparedConnection: Symbol("prepared-connection"),
   runAtomCommand: vi.fn(),
@@ -12,11 +14,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  executeAtomQuery: mocks.executeAtomQuery,
   runAtomCommand: mocks.runAtomCommand,
+  squashAtomCommandFailure: (result: { readonly error: unknown }) => result.error,
 }));
 
 vi.mock("../state/atom-registry", () => ({
   appAtomRegistry: { get: mocks.readAtom },
+}));
+
+vi.mock("../state/assets", () => ({
+  assetEnvironment: { createUrl: mocks.createAssetUrl },
 }));
 
 vi.mock("../state/attachments", () => ({
@@ -76,6 +84,10 @@ const file = {
 
 describe("uploadMobileAttachments", () => {
   beforeEach(() => {
+    mocks.createAssetUrl.mockReset();
+    mocks.createAssetUrl.mockImplementation((target: unknown) => target);
+    mocks.executeAtomQuery.mockReset();
+    mocks.executeAtomQuery.mockResolvedValue({ _tag: "Success", value: {} });
     mocks.runAtomCommand.mockReset();
     mocks.readAtom.mockReset();
     mocks.upload.mockReset();
@@ -141,6 +153,20 @@ describe("uploadMobileAttachments", () => {
     ]);
   });
 
+  it("uses the current connection when an environment reconnects during URL creation", async () => {
+    mocks.readAtom
+      .mockReturnValueOnce(Option.some({ httpBaseUrl: "https://old-environment.example/" }))
+      .mockReturnValueOnce(Option.some({ httpBaseUrl: "https://new-environment.example/" }));
+
+    await uploadMobileAttachments({ environmentId, attachments: [file] });
+
+    expect(mocks.upload).toHaveBeenCalledWith(
+      file.fileUri,
+      "https://new-environment.example/api/attachments/upload/signed",
+      expect.anything(),
+    );
+  });
+
   it("adds uploaded file references to durable drafts without changing images", () => {
     expect(
       withUploadedMobileAttachmentReferences({
@@ -203,6 +229,28 @@ describe("uploadMobileAttachments", () => {
     });
     expect(mocks.upload).not.toHaveBeenCalled();
     expect(mocks.runAtomCommand).not.toHaveBeenCalled();
+  });
+
+  it("uploads a file again when its saved pending upload has expired", async () => {
+    mocks.executeAtomQuery.mockResolvedValueOnce({
+      _tag: "Failure",
+      error: { _tag: "AssetAttachmentNotFoundError" },
+    });
+    const previouslyUploaded = {
+      ...file,
+      uploadedAttachmentId: "pending-expired-pdf",
+      uploadEnvironmentId: environmentId,
+    };
+
+    const result = await uploadMobileAttachments({
+      environmentId,
+      attachments: [previouslyUploaded],
+    });
+
+    expect(mocks.upload).toHaveBeenCalledOnce();
+    expect(result.pendingAttachmentIds).toEqual([
+      "pending-00000000-0000-4000-8000-000000000001-pdf",
+    ]);
   });
 
   it("removes pending uploads when the native HTTP request fails", async () => {

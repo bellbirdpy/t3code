@@ -18,6 +18,7 @@ import {
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
@@ -2133,8 +2134,12 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsAttachmentUploads =
     attachmentEnvironmentConfig?.environment.capabilities.attachmentUploads === true;
-  const maxFileAttachmentBytes =
+  const advertisedFileAttachmentBytes =
     attachmentEnvironmentConfig?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null;
+  const maxFileAttachmentBytes =
+    advertisedFileAttachmentBytes === null
+      ? null
+      : Math.min(advertisedFileAttachmentBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
@@ -5768,6 +5773,7 @@ function ChatViewContent(props: ChatViewProps) {
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
+            downloadable: false,
           },
     );
     const shouldAnchorFirstMessage =

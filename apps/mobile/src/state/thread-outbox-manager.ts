@@ -126,10 +126,15 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   // Rewrites an already-queued message. A no-op when the message has been
   // removed in the meantime (e.g. deleted or delivered), so a trailing editor
   // flush can never resurrect it. Returns whether the message was updated.
-  const update = (message: QueuedThreadMessage): Promise<boolean> =>
+  const update = (
+    message: QueuedThreadMessage,
+    expectedMessage?: QueuedThreadMessage,
+  ): Promise<boolean> =>
     serialize(async () => {
-      const exists = currentMessages().some(
-        (candidate) => candidate.messageId === message.messageId,
+      const exists = currentMessages().some((candidate) =>
+        expectedMessage === undefined
+          ? candidate.messageId === message.messageId
+          : candidate === expectedMessage,
       );
       if (!exists) {
         return false;

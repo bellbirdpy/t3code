@@ -611,6 +611,32 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("href=");
   });
 
+  it("does not download an optimistic file before the server supplies its attachment ID", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Read the report."),
+      message: {
+        ...buildUserTimelineEntry("Read the report.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "composer-local-report",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 42,
+            downloadable: false,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain("report.pdf");
+    expect(markup).not.toContain('aria-label="Download report.pdf"');
+  });
+
   it("keeps reserved end space when tool work starts while reading history", () => {
     const turnId = TurnId.make("turn-with-active-tool");
     const firstEntry = buildUserTimelineEntry("Run the command.");

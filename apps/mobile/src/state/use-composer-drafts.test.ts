@@ -182,6 +182,41 @@ describe("mobile composer drafts", () => {
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
   });
 
+  it("loads persisted outbox messages before deciding an attachment file is unused", async () => {
+    const file = {
+      id: "file-persisted",
+      type: "file" as const,
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      fileUri: "file:///documents/t3-composer-attachments/report.pdf",
+    };
+    const load = vi.spyOn(threadOutboxManager, "load").mockImplementation(async () => {
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {
+        "environment-1:thread-1": [
+          {
+            environmentId: EnvironmentId.make("environment-1"),
+            threadId: ThreadId.make("thread-1"),
+            messageId: MessageId.make("message-persisted"),
+            commandId: CommandId.make("command-persisted"),
+            text: "Review the report",
+            attachments: [file],
+            createdAt: "2026-08-24T12:00:00.000Z",
+          },
+        ],
+      });
+    });
+
+    try {
+      await releaseUnusedComposerAttachmentFiles([file]);
+
+      expect(load).toHaveBeenCalledOnce();
+      expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+    }
+  });
+
   it("does not delete attachment files when the draft removal cannot be saved", async () => {
     const file = {
       id: "file-unsaved",

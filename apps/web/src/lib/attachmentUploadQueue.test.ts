@@ -353,6 +353,44 @@ describe("attachmentUploadQueue", () => {
     );
   });
 
+  it("cancels persisted-upload verification when a stash discards its file", async () => {
+    const file: ComposerFileAttachment = {
+      ...makeFile("stashed-checking"),
+      file: null,
+      uploadedAttachmentId: "pending-stashed-checking-pdf",
+      uploadEnvironmentId: firstEnvironment,
+    };
+    let resolveVerification: (result: {
+      readonly _tag: "Success";
+      readonly value: object;
+    }) => void = () => {};
+    mocks.executeAtomQuery.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveVerification = resolve;
+      }),
+    );
+
+    startAttachmentUpload({ environmentId: firstEnvironment, image: file });
+    releasePersistedAttachmentUpload({
+      id: file.id,
+      environmentId: firstEnvironment,
+      attachmentId: "pending-stashed-checking-pdf",
+    });
+    resolveVerification({ _tag: "Success", value: {} });
+    await Promise.resolve();
+
+    expect(readAttachmentUpload(file.id)).toBeUndefined();
+    expect(mocks.runAtomCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      mocks.removeUpload,
+      {
+        environmentId: firstEnvironment,
+        input: { attachmentId: "pending-stashed-checking-pdf" },
+      },
+      expect.anything(),
+    );
+  });
+
   it("deletes a persisted server upload even when browser upload state is gone", () => {
     releasePersistedAttachmentUpload({
       id: "stashed-report",

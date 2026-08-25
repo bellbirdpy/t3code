@@ -480,6 +480,34 @@ describe("thread outbox", () => {
     registry.dispose();
   });
 
+  it("rejects an attachment update when the queued message was edited first", async () => {
+    const registry = AtomRegistry.make();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => [],
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+    const original = queuedMessage({
+      messageId: "message-edit-race",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const edited = { ...original, text: "keep my changes" };
+
+    await manager.enqueue(original);
+    await manager.update(edited);
+
+    await expect(manager.update({ ...original, text: "stale upload" }, original)).resolves.toBe(
+      false,
+    );
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({
+      "environment-1:thread-1": [edited],
+    });
+    registry.dispose();
+  });
+
   it("only removes a missing-thread message after shell synchronization is live", () => {
     expect(
       resolveThreadOutboxDeliveryAction({

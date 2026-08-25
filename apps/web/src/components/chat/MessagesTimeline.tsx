@@ -1071,7 +1071,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 <>
                   <FileIcon className="size-4 shrink-0 text-secondary-label" />
                   <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                  <DownloadIcon className="size-4 shrink-0" />
+                  {file.downloadable === false ? null : (
+                    <DownloadIcon className="size-4 shrink-0" />
+                  )}
                 </>
               );
               return file.previewUrl ? (
@@ -1083,6 +1085,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 >
                   {content}
                 </a>
+              ) : file.downloadable === false ? (
+                <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+                  {content}
+                </div>
               ) : (
                 <button
                   key={file.id}

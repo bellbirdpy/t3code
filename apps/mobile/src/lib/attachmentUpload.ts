@@ -1,19 +1,27 @@
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import {
+  executeAtomQuery,
+  runAtomCommand,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type {
   ChatFileAttachment,
   EnvironmentId,
   UploadChatImageAttachment,
 } from "@t3tools/contracts";
+import { AssetAttachmentNotFoundError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { appAtomRegistry } from "../state/atom-registry";
+import { assetEnvironment } from "../state/assets";
 import { attachmentEnvironment } from "../state/attachments";
 import { environmentSession } from "../state/session";
 import { toUploadChatImageAttachments, type DraftComposerAttachment } from "./composerImages";
 
 export type UploadedMobileAttachment = UploadChatImageAttachment | ChatFileAttachment;
+const isAssetAttachmentNotFound = Schema.is(AssetAttachmentNotFoundError);
 
 /** Keep uploaded file ids on durable drafts so a later send can reuse their bytes. */
 export function withUploadedMobileAttachmentReferences(input: {
@@ -94,15 +102,40 @@ export async function uploadMobileAttachments(input: {
         attachment.uploadEnvironmentId === input.environmentId &&
         attachment.uploadedAttachmentId
       ) {
-        pendingAttachmentIds.push(attachment.uploadedAttachmentId);
-        uploadedAttachments.push({
-          type: "file",
-          id: attachment.uploadedAttachmentId,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          sizeBytes: attachment.sizeBytes,
-        });
-        continue;
+        const verified = await executeAtomQuery(
+          appAtomRegistry,
+          assetEnvironment.createUrl({
+            environmentId: input.environmentId,
+            input: {
+              resource: { _tag: "attachment", attachmentId: attachment.uploadedAttachmentId },
+            },
+          }),
+          { reportFailure: false, reportDefect: false },
+        );
+        if (verified._tag === "Success") {
+          pendingAttachmentIds.push(attachment.uploadedAttachmentId);
+          uploadedAttachments.push({
+            type: "file",
+            id: attachment.uploadedAttachmentId,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          });
+          continue;
+        }
+
+        const error = squashAtomCommandFailure(verified);
+        if (
+          !isAssetAttachmentNotFound(error) &&
+          !(
+            typeof error === "object" &&
+            error !== null &&
+            "_tag" in error &&
+            error._tag === "AssetAttachmentNotFoundError"
+          )
+        ) {
+          throw error;
+        }
       }
 
       const issued = await runAtomCommand(
@@ -125,7 +158,13 @@ export async function uploadMobileAttachments(input: {
       pendingAttachmentIds.push(issued.value.attachmentId);
       createdAttachmentIds.push(issued.value.attachmentId);
 
-      const url = resolveAssetUrl(connection.value.httpBaseUrl, issued.value.relativeUrl);
+      const currentConnection = appAtomRegistry.get(
+        environmentSession.preparedConnectionValueAtom(input.environmentId),
+      );
+      if (Option.isNone(currentConnection)) {
+        throw new Error("The environment disconnected before the attachment could upload.");
+      }
+      const url = resolveAssetUrl(currentConnection.value.httpBaseUrl, issued.value.relativeUrl);
       if (!url) {
         throw new Error(`Could not resolve the upload URL for '${attachment.name}'.`);
       }

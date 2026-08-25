@@ -1,5 +1,6 @@
 import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts";
 import {
   clearSharedPayloads,
   getResolvedSharedPayloadsAsync,
@@ -115,7 +116,11 @@ async function removeReplayedPayloadFiles(payloads: ReadonlyArray<SharePayload>)
   if (uris.size === 0) {
     return;
   }
-  const resolvedPayloads = await resolvedPayloadsForFiles();
+  const resolvedPayloads = payloads.some((payload) =>
+    ["file", "audio", "video"].includes(payload.shareType),
+  )
+    ? []
+    : await resolvedPayloadsForFiles();
   for (const payload of resolvedPayloads) {
     if (["image", "file", "audio", "video"].includes(payload.shareType) && payload.contentUri) {
       uris.add(payload.contentUri);
@@ -135,17 +140,28 @@ const incomingShareInbox = new IncomingShareInbox({
   clearPayloads: clearSharedPayloads,
   buildDraft: async ({ payloads, id, createdAt }) => {
     const cleanupUris = new Set<string>();
-    const resolvedPayloads = payloads.some((payload) =>
-      ["image", "file", "audio", "video"].includes(payload.shareType),
-    )
-      ? await resolvedPayloadsForFiles()
-      : [];
+    const persistedUris = new Set<string>();
+    const hasGenericFilePayload = payloads.some((payload) =>
+      ["file", "audio", "video"].includes(payload.shareType),
+    );
+    const resolvedPayloads =
+      !hasGenericFilePayload && payloads.some((payload) => payload.shareType === "image")
+        ? await resolvedPayloadsForFiles()
+        : [];
     const draft = await buildIncomingShareDraft({
       payloads,
       resolvedPayloads,
       fileReader: {
         readBase64,
-        persistFile: persistComposerAttachmentFile,
+        persistFile: async (uri, name) => {
+          const persistedUri = await persistComposerAttachmentFile(
+            uri,
+            name,
+            PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+          );
+          persistedUris.add(persistedUri);
+          return persistedUri;
+        },
         readSize: readFileSize,
         removeOwnedFile: (uri) => {
           cleanupUris.add(uri);
@@ -158,6 +174,9 @@ const incomingShareInbox = new IncomingShareInbox({
       draft,
       cleanup: async () => {
         await Promise.all([...cleanupUris].map(removeOwnedFile));
+      },
+      rollback: async () => {
+        await Promise.all([...persistedUris].map(removeOwnedFile));
       },
     };
   },

@@ -8,6 +8,8 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type MessageId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
@@ -45,11 +47,11 @@ import {
 } from "./thread-outbox-model";
 import { threadEnvironment } from "./threads";
 import {
-  appendComposerDraftAttachments,
   flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   releaseUnusedComposerAttachmentFiles,
+  updateComposerDraftSettings,
 } from "./use-composer-drafts";
 import { useAtomCommand } from "./use-atom-command";
 import {
@@ -114,32 +116,32 @@ async function persistQueuedAttachmentUploads(
     return queuedMessage;
   }
 
+  const previousAttachmentIds = new Set(
+    queuedMessage.attachments.flatMap((attachment) =>
+      attachment.type === "file" &&
+      attachment.uploadEnvironmentId === queuedMessage.environmentId &&
+      attachment.uploadedAttachmentId
+        ? [attachment.uploadedAttachmentId]
+        : [],
+    ),
+  );
+  const createdAttachmentIds = uploaded.pendingAttachmentIds.filter(
+    (attachmentId) => !previousAttachmentIds.has(attachmentId),
+  );
+  if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
+    await deletePendingMobileAttachments(queuedMessage.environmentId, createdAttachmentIds);
+    return null;
+  }
+
   const updatedMessage = { ...queuedMessage, attachments };
   try {
-    if (await updateThreadOutboxMessage(updatedMessage)) {
+    if (await updateThreadOutboxMessage(updatedMessage, queuedMessage)) {
       return updatedMessage;
     }
-    await deletePendingMobileAttachments(
-      queuedMessage.environmentId,
-      uploaded.pendingAttachmentIds,
-    );
+    await deletePendingMobileAttachments(queuedMessage.environmentId, createdAttachmentIds);
     return null;
   } catch (error) {
-    const previousAttachmentIds = new Set(
-      queuedMessage.attachments.flatMap((attachment) =>
-        attachment.type === "file" &&
-        attachment.uploadEnvironmentId === queuedMessage.environmentId &&
-        attachment.uploadedAttachmentId
-          ? [attachment.uploadedAttachmentId]
-          : [],
-      ),
-    );
-    await deletePendingMobileAttachments(
-      queuedMessage.environmentId,
-      uploaded.pendingAttachmentIds.filter(
-        (attachmentId) => !previousAttachmentIds.has(attachmentId),
-      ),
-    );
+    await deletePendingMobileAttachments(queuedMessage.environmentId, createdAttachmentIds);
     throw error;
   }
 }
@@ -152,15 +154,59 @@ async function restoreRejectedQueuedMessage(
     ? `new-task:${scopedProjectKey(queuedMessage.environmentId, queuedMessage.creation.projectId)}`
     : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
   try {
-    await mergeComposerDraftContent(draftKey, { text: queuedMessage.text, attachments: [] });
+    if (
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
+      !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
+    ) {
+      return true;
+    }
+
     const existingAttachmentIds = new Set(
       getComposerDraftSnapshot(draftKey).attachments.map((attachment) => attachment.id),
     );
-    appendComposerDraftAttachments(
-      draftKey,
-      queuedMessage.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id)),
-    );
+    const addedAttachmentCount = queuedMessage.attachments.filter(
+      (attachment) => !existingAttachmentIds.has(attachment.id),
+    ).length;
+    if (existingAttachmentIds.size + addedAttachmentCount > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      setPendingConnectionError(
+        `Remove attachments from the draft before restoring this message. Messages can contain at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments.`,
+      );
+      return false;
+    }
+
+    await mergeComposerDraftContent(draftKey, {
+      text: queuedMessage.text,
+      attachments: queuedMessage.attachments,
+    });
+    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
+      return true;
+    }
+    updateComposerDraftSettings(draftKey, {
+      ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
+      ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
+      ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
+      ...(queuedMessage.creation
+        ? {
+            workspaceSelection: {
+              mode: queuedMessage.creation.workspaceMode,
+              branch: queuedMessage.creation.branch,
+              worktreePath: queuedMessage.creation.worktreePath,
+              ...(queuedMessage.creation.startFromOrigin !== undefined
+                ? { startFromOrigin: queuedMessage.creation.startFromOrigin }
+                : {}),
+            },
+          }
+        : {}),
+    });
     await flushComposerDrafts();
+    if (
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
+      !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
+    ) {
+      return true;
+    }
     await removeThreadOutboxMessage(queuedMessage);
     setPendingConnectionError(message);
     return true;
@@ -316,6 +362,9 @@ export function useThreadOutboxDrain(): void {
         if ((await persistQueuedAttachmentUploads(queuedMessage, uploaded)) === null) {
           return true;
         }
+        if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
+          return true;
+        }
       } catch (error) {
         console.warn("[thread-outbox] failed to upload attachments", error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
@@ -379,6 +428,9 @@ export function useThreadOutboxDrain(): void {
           attachments: queuedMessage.attachments,
         });
         if ((await persistQueuedAttachmentUploads(queuedMessage, uploaded)) === null) {
+          return true;
+        }
+        if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
           return true;
         }
       } catch (error) {
@@ -455,18 +507,27 @@ export function useThreadOutboxDrain(): void {
         if (maxBytes === undefined) {
           attachmentError = "This server does not support file attachments.";
         } else {
-          const oversized = fileAttachments.find((attachment) => attachment.sizeBytes > maxBytes);
+          const effectiveMaxBytes = Math.min(maxBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES);
+          const oversized = fileAttachments.find(
+            (attachment) => attachment.sizeBytes > effectiveMaxBytes,
+          );
           if (oversized) {
-            attachmentError = `'${oversized.name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`;
+            attachmentError = `'${oversized.name}' exceeds the ${Math.round(effectiveMaxBytes / (1024 * 1024))} MB attachment limit.`;
           }
         }
       }
       if (attachmentError !== null) {
         beginDispatchingQueuedMessage(nextQueuedMessage.messageId);
         void confirmThreadOutboxMessageQueued(nextQueuedMessage)
-          .then((queued) =>
-            queued ? restoreRejectedQueuedMessage(nextQueuedMessage, attachmentError) : true,
-          )
+          .then((queued) => {
+            if (
+              !queued ||
+              appAtomRegistry.get(editingQueuedMessageIdsAtom)[nextQueuedMessage.messageId]
+            ) {
+              return true;
+            }
+            return restoreRejectedQueuedMessage(nextQueuedMessage, attachmentError);
+          })
           .finally(() => finishDispatchingQueuedMessage(nextQueuedMessage.messageId));
         return;
       }

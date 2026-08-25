@@ -6,6 +6,7 @@ import * as Cause from "effect/Cause";
 import {
   CommandId,
   MessageId,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type EnvironmentId,
   type ModelSelection,
   type ProviderInteractionMode,
@@ -313,20 +314,20 @@ export function useThreadComposerState() {
       selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.fileAttachments
         ?.maxUploadBytes;
     if (maxBytes === undefined) {
-      setPendingConnectionError("This server does not support file attachments.");
+      Alert.alert("Could not attach file", "This server does not support file attachments.");
       return;
     }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const result = await pickComposerFiles({
       existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
-      maxBytes,
+      maxBytes: Math.min(maxBytes, PROVIDER_SEND_TURN_MAX_FILE_BYTES),
     });
     if (result.files.length > 0) {
       appendComposerDraftAttachments(threadKey, result.files);
     }
     if (result.error) {
-      setPendingConnectionError(result.error);
+      Alert.alert("Could not attach file", result.error);
     }
   }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
 

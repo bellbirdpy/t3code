@@ -44,9 +44,14 @@ export function toUploadChatImageAttachments(
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
 const OWNED_ATTACHMENT_DIRECTORY = "t3-composer-attachments";
+const ATTACHMENT_COPY_CHUNK_BYTES = 64 * 1024;
 
-export async function persistComposerAttachmentFile(uri: string, name: string): Promise<string> {
-  const { Directory, File, Paths } = await import("expo-file-system");
+export async function persistComposerAttachmentFile(
+  uri: string,
+  name: string,
+  maxBytes?: number,
+): Promise<string> {
+  const { Directory, File, FileMode, Paths } = await import("expo-file-system");
   const directory = new Directory(Paths.document, OWNED_ATTACHMENT_DIRECTORY);
   directory.create({ idempotent: true, intermediates: true });
   const safeName =
@@ -54,7 +59,51 @@ export async function persistComposerAttachmentFile(uri: string, name: string): 
       character === "/" || character === "\\" || character.charCodeAt(0) < 32 ? "-" : character,
     ).join("") || "file";
   const destination = new File(directory, `${uuidv4()}-${safeName}`);
-  await new File(uri).copy(destination);
+  const source = new File(uri);
+  if (maxBytes !== undefined && source.size === null) {
+    destination.create();
+    try {
+      const reader = source.open(FileMode.ReadOnly);
+      try {
+        const writer = destination.open(FileMode.WriteOnly);
+        try {
+          let copiedBytes = 0;
+          while (true) {
+            const chunk = reader.readBytes(
+              Math.min(ATTACHMENT_COPY_CHUNK_BYTES, maxBytes - copiedBytes + 1),
+            );
+            if (chunk.byteLength === 0) {
+              break;
+            }
+            copiedBytes += chunk.byteLength;
+            if (copiedBytes > maxBytes) {
+              throw new Error(
+                `'${name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`,
+              );
+            }
+            writer.writeBytes(chunk);
+          }
+        } finally {
+          writer.close();
+        }
+      } finally {
+        reader.close();
+      }
+    } catch (error) {
+      if (destination.exists) {
+        destination.delete();
+      }
+      throw error;
+    }
+    return destination.uri;
+  }
+
+  if (maxBytes !== undefined && source.size !== null && source.size > maxBytes) {
+    throw new Error(
+      `'${name}' exceeds the ${Math.round(maxBytes / (1024 * 1024))} MB attachment limit.`,
+    );
+  }
+  await source.copy(destination);
   return destination.uri;
 }
 
@@ -101,7 +150,10 @@ export async function pickComposerFiles(input: {
     return { files: [], error: null };
   }
 
-  const maxBytes = input.maxBytes ?? PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+  const maxBytes = Math.min(
+    input.maxBytes ?? PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+    PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  );
   const attachments: DraftComposerFileAttachment[] = [];
   let error: string | null = null;
   let exceededAttachmentLimit = false;

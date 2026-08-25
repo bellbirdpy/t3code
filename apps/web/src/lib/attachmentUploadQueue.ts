@@ -417,6 +417,14 @@ export function releasePersistedAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
   readonly attachmentId: string;
 }): void {
+  const job = jobsByImageId.get(input.id);
+  if (
+    job?.environmentId === input.environmentId &&
+    job.persistedAttachmentId === input.attachmentId
+  ) {
+    releaseAttachmentUpload(input.id);
+    return;
+  }
   const upload = readAttachmentUpload(input.id);
   if (
     upload?.status === "ready" &&

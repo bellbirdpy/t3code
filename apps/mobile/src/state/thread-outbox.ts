@@ -37,8 +37,11 @@ export function confirmThreadOutboxMessageQueued(message: QueuedThreadMessage): 
 }
 
 /** Rewrite a queued message; no-op (false) if it was removed in the meantime. */
-export function updateThreadOutboxMessage(message: QueuedThreadMessage): Promise<boolean> {
-  return threadOutboxManager.update(message);
+export function updateThreadOutboxMessage(
+  message: QueuedThreadMessage,
+  expectedMessage?: QueuedThreadMessage,
+): Promise<boolean> {
+  return threadOutboxManager.update(message, expectedMessage);
 }
 
 export function removeThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {

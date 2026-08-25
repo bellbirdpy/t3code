@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   pickFile: vi.fn(),
   copy: vi.fn(),
   delete: vi.fn(),
+  open: vi.fn(),
+  size: vi.fn(),
 }));
 
 vi.mock("expo-file-system", () => {
@@ -30,6 +32,16 @@ vi.mock("expo-file-system", () => {
       return true;
     }
 
+    get size(): number | null {
+      return mocks.size(this.uri) ?? null;
+    }
+
+    create(): void {}
+
+    open(mode: string) {
+      return mocks.open(this.uri, mode);
+    }
+
     async copy(destination: File): Promise<void> {
       mocks.copy(this.uri, destination.uri);
     }
@@ -39,18 +51,29 @@ vi.mock("expo-file-system", () => {
     }
   }
 
-  return { Directory, File, Paths: { document: "file:///documents" } };
+  return {
+    Directory,
+    File,
+    FileMode: { ReadOnly: "r", WriteOnly: "w" },
+    Paths: { document: "file:///documents" },
+  };
 });
 
 vi.mock("./uuid", () => ({ uuidv4: () => "attachment-id" }));
 
-import { pickComposerFiles, removePersistedComposerAttachmentFile } from "./composerImages";
+import {
+  persistComposerAttachmentFile,
+  pickComposerFiles,
+  removePersistedComposerAttachmentFile,
+} from "./composerImages";
 
 describe("pickComposerFiles", () => {
   beforeEach(() => {
     mocks.pickFile.mockReset();
     mocks.copy.mockReset();
     mocks.delete.mockReset();
+    mocks.open.mockReset();
+    mocks.size.mockReset();
   });
 
   it("copies picked files into app-owned storage without loading their contents", async () => {
@@ -102,6 +125,55 @@ describe("pickComposerFiles", () => {
       files: [],
       error: "'archive.zip' exceeds the 1 MB attachment limit.",
     });
+    expect(mocks.copy).not.toHaveBeenCalled();
+  });
+
+  it("never accepts files above the 50 MB contract limit", async () => {
+    mocks.pickFile.mockResolvedValue({
+      canceled: false,
+      result: [
+        {
+          uri: "file:///downloads/archive.zip",
+          name: "archive.zip",
+          type: "application/zip",
+          size: 51 * 1024 * 1024,
+        },
+      ],
+    });
+
+    await expect(
+      pickComposerFiles({ existingCount: 0, maxBytes: 80 * 1024 * 1024 }),
+    ).resolves.toEqual({
+      files: [],
+      error: "'archive.zip' exceeds the 50 MB attachment limit.",
+    });
+  });
+
+  it("stops copying an unknown-size content URI when it exceeds the attachment limit", async () => {
+    const maxBytes = 1024 * 1024;
+    let remainingBytes = maxBytes + 1;
+    const source = {
+      readBytes: vi.fn((length: number) => {
+        const size = Math.min(length, remainingBytes);
+        remainingBytes -= size;
+        return new Uint8Array(size);
+      }),
+      close: vi.fn(),
+    };
+    const destination = { writeBytes: vi.fn(), close: vi.fn() };
+    mocks.open.mockImplementation((uri: string) =>
+      uri.startsWith("content:") ? source : destination,
+    );
+
+    await expect(
+      persistComposerAttachmentFile("content://shared/large", "large.bin", maxBytes),
+    ).rejects.toThrow("'large.bin' exceeds the 1 MB attachment limit.");
+
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(destination.close).toHaveBeenCalledOnce();
+    expect(mocks.delete).toHaveBeenCalledWith(
+      "file:///documents/t3-composer-attachments/attachment-id-large.bin",
+    );
     expect(mocks.copy).not.toHaveBeenCalled();
   });
 

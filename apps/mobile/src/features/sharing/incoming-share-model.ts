@@ -78,9 +78,13 @@ export function selectIncomingShareAttachments(input: {
       warnings.push(`'${attachment.name}' was skipped because this server does not support files.`);
       continue;
     }
-    if (attachment.sizeBytes > input.maxFileAttachmentBytes) {
+    const maxFileAttachmentBytes = Math.min(
+      input.maxFileAttachmentBytes,
+      PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+    );
+    if (attachment.sizeBytes > maxFileAttachmentBytes) {
       warnings.push(
-        `'${attachment.name}' exceeds the ${attachmentLimitLabel(input.maxFileAttachmentBytes)} attachment limit.`,
+        `'${attachment.name}' exceeds the ${attachmentLimitLabel(maxFileAttachmentBytes)} attachment limit.`,
       );
       continue;
     }
@@ -253,8 +257,8 @@ export async function buildIncomingShareDraft(input: {
           sizeBytes,
           fileUri,
         });
-      } catch {
-        warnings.push(`Could not read '${name}'.`);
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : `Could not read '${name}'.`);
       } finally {
         await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
       }
