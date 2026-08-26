@@ -23,6 +23,7 @@ import { codexSessionAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunch
 // contains long-running threads whose full turn history is expensive to read.
 const PAGE_SIZE = 5;
 const THREAD_READ_CONCURRENCY = 4;
+const THREAD_READ_TIMEOUT = "30 seconds" as const;
 const FORCE_KILL_AFTER = "2 seconds" as const;
 
 function diagnosticErrorType(cause: unknown): string {
@@ -142,6 +143,7 @@ export function readCodexThreadSnapshots<E>(
     threads,
     (thread) =>
       readThread(thread.id).pipe(
+        Effect.timeout(THREAD_READ_TIMEOUT),
         Effect.map((response) => Option.some(toPersistedThread(response.thread))),
         Effect.catch((cause) =>
           Effect.logWarning("skipped unreadable persisted Codex thread", {
@@ -241,7 +243,7 @@ export const listCodexThreadsForRead = <E>(
     let cursor: string | null | undefined = pagination?.startCursor;
     let pagesRead = 0;
     do {
-      const page = yield* requestPage(cursor ?? undefined);
+      const page: EffectCodexSchema.V2ThreadListResponse = yield* requestPage(cursor ?? undefined);
       pagesRead += 1;
       const changed = selectCodexThreadsForRead(page.data, discoveryInput);
       selected.push(...changed);
