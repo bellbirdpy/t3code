@@ -27,6 +27,7 @@ function makeReadModel(input: {
   readonly archivedAt?: string | null;
   readonly activities?: OrchestrationThread["activities"];
   readonly messages?: OrchestrationThread["messages"];
+  readonly session?: OrchestrationThread["session"];
 }): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -54,7 +55,7 @@ function makeReadModel(input: {
         proposedPlans: [],
         activities: input.activities ?? [],
         checkpoints: [],
-        session: null,
+        session: input.session ?? null,
       },
     ],
     updatedAt: NOW,
@@ -281,6 +282,66 @@ it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
       if (unsnoozed?.type === "thread.unsnoozed") {
         expect(unsnoozed.payload.reason).toBe("activity");
       }
+    }),
+  );
+
+  it.effect("recovering an active-writer conflict spends the snooze return ticket", () =>
+    Effect.gen(function* () {
+      const messageId = MessageId.make("message-recover");
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.recover",
+          commandId: CommandId.make("cmd-turn-recover"),
+          threadId: ThreadId.make("thread-1"),
+          messageId,
+          strategy: "retry",
+          createdAt: NOW,
+        },
+        readModel: makeReadModel({
+          snoozedUntil: FUTURE_WAKE,
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "error",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "Codex session is open elsewhere",
+            updatedAt: NOW,
+          },
+          messages: [
+            {
+              id: messageId,
+              role: "user",
+              text: "Continue",
+              turnId: null,
+              streaming: false,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+          activities: [
+            {
+              id: EventId.make("active-writer-conflict"),
+              tone: "error",
+              kind: "provider.thread.active-writer-conflict",
+              summary: "Codex session is open elsewhere",
+              payload: {
+                messageId,
+                canFork: true,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+              },
+              turnId: null,
+              createdAt: NOW,
+            },
+          ],
+        }),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.unsnoozed",
+        "thread.turn-start-requested",
+      ]);
     }),
   );
 });

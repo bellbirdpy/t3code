@@ -301,7 +301,7 @@ import {
 } from "./chat/ProviderStatusBanner";
 import {
   dismissThreadErrorBannerForSession,
-  getActiveWriterRecoveryMessageId,
+  getActiveWriterRecovery,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
@@ -1616,37 +1616,38 @@ function ChatViewContent(props: ChatViewProps) {
   const threadError = isServerThread
     ? (localServerError ?? activeServerThread?.session?.lastError ?? null)
     : localDraftError;
-  const activeWriterRecoveryMessageIdRaw = isServerThread
-    ? getActiveWriterRecoveryMessageId({
+  const activeWriterRecoveryRaw = isServerThread
+    ? getActiveWriterRecovery({
         sessionStatus: activeServerThread?.session?.status,
         error: threadError,
         activities: activeServerThread?.activities ?? [],
       })
     : null;
-  const activeWriterRecoveryMessageId =
+  const activeWriterRecovery =
     activeThread?.messages.find(
-      (message) => message.role === "user" && message.id === activeWriterRecoveryMessageIdRaw,
-    )?.id ?? null;
-  const [activeWriterRecoveryPending, setActiveWriterRecoveryPending] = useState(false);
-  useEffect(() => {
-    if (activeWriterRecoveryMessageId === null) {
-      setActiveWriterRecoveryPending(false);
-    }
-  }, [activeWriterRecoveryMessageId]);
+      (message) => message.role === "user" && message.id === activeWriterRecoveryRaw?.messageId,
+    ) !== undefined
+      ? activeWriterRecoveryRaw
+      : null;
+  const [pendingActiveWriterConflictId, setPendingActiveWriterConflictId] = useState<string | null>(
+    null,
+  );
+  const activeWriterRecoveryPending =
+    activeWriterRecovery?.conflictId === pendingActiveWriterConflictId;
   const handleActiveWriterRecovery = useCallback(
     async (strategy: "retry" | "fork") => {
-      if (!activeThread || activeWriterRecoveryMessageId === null) return;
-      setActiveWriterRecoveryPending(true);
+      if (!activeThread || activeWriterRecovery === null) return;
+      setPendingActiveWriterConflictId(activeWriterRecovery.conflictId);
       const result = await recoverThreadTurn({
         environmentId,
         input: {
           threadId: activeThread.id,
-          messageId: activeWriterRecoveryMessageId,
+          messageId: activeWriterRecovery.messageId,
           strategy,
         },
       });
       if (result._tag === "Failure") {
-        setActiveWriterRecoveryPending(false);
+        setPendingActiveWriterConflictId(null);
         if (!isAtomCommandInterrupted(result)) {
           toastManager.add({
             type: "error",
@@ -1655,7 +1656,7 @@ function ChatViewContent(props: ChatViewProps) {
         }
       }
     },
-    [activeThread, activeWriterRecoveryMessageId, environmentId, recoverThreadTurn],
+    [activeThread, activeWriterRecovery, environmentId, recoverThreadTurn],
   );
   // Dismissals can only mask the shown error, never clear it: a server thread
   // keeps its error in session.lastError, so clearing the local shadow would
@@ -6914,7 +6915,7 @@ function ChatViewContent(props: ChatViewProps) {
 
         <ThreadErrorBanner
           error={visibleThreadError}
-          {...(activeWriterRecoveryMessageId !== null
+          {...(activeWriterRecovery !== null
             ? {
                 activeWriterRecovery: {
                   pending: activeWriterRecoveryPending,

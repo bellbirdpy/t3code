@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   dismissThreadErrorBannerForSession,
+  getActiveWriterRecovery,
   getThreadErrorBannerKey,
   getActiveWriterRecoveryMessageId,
   isThreadErrorBannerDismissedForSession,
@@ -34,6 +35,42 @@ describe("ThreadErrorBanner", () => {
         activities,
       }),
     ).toBeNull();
+  });
+
+  it("changes the recovery key when the same message conflicts again", () => {
+    const input = {
+      sessionStatus: "error",
+      error:
+        "This Codex session is open in another client. Close it there and retry, or continue in a copy.",
+    };
+    const first = getActiveWriterRecovery({
+      ...input,
+      activities: [
+        {
+          id: "conflict-1",
+          kind: "provider.thread.active-writer-conflict",
+          payload: { messageId: "message-1", canFork: true },
+        },
+      ],
+    });
+    const repeated = getActiveWriterRecovery({
+      ...input,
+      activities: [
+        {
+          id: "conflict-1",
+          kind: "provider.thread.active-writer-conflict",
+          payload: { messageId: "message-1", canFork: true },
+        },
+        {
+          id: "conflict-2",
+          kind: "provider.thread.active-writer-conflict",
+          payload: { messageId: "message-1", canFork: true },
+        },
+      ],
+    });
+
+    expect(first).toEqual({ messageId: "message-1", conflictId: "conflict-1" });
+    expect(repeated).toEqual({ messageId: "message-1", conflictId: "conflict-2" });
   });
 
   it("stays hidden after its current error is dismissed", () => {

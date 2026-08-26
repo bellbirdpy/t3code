@@ -1,15 +1,19 @@
 import { memo } from "react";
-import { CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE } from "@t3tools/contracts";
+import { CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE, MessageId } from "@t3tools/contracts";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CircleAlertIcon, LoaderCircleIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-export function getActiveWriterRecoveryMessageId(input: {
+export function getActiveWriterRecovery(input: {
   sessionStatus: string | null | undefined;
   error: string | null | undefined;
-  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>;
-}): string | null {
+  activities: ReadonlyArray<{
+    readonly id?: unknown;
+    readonly kind: string;
+    readonly payload: unknown;
+  }>;
+}): { readonly messageId: MessageId; readonly conflictId: string } | null {
   if (input.sessionStatus !== "error" || input.error !== CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE) {
     return null;
   }
@@ -20,10 +24,17 @@ export function getActiveWriterRecoveryMessageId(input: {
     return null;
   }
   const payload = conflict.payload as Record<string, unknown>;
-  return payload.canFork === true && typeof payload.messageId === "string"
-    ? payload.messageId
-    : null;
+  if (payload.canFork !== true || typeof payload.messageId !== "string") return null;
+  const conflictId =
+    typeof conflict.id === "string"
+      ? conflict.id
+      : `${payload.messageId}:${input.activities.lastIndexOf(conflict)}`;
+  return { messageId: MessageId.make(payload.messageId), conflictId };
 }
+
+export const getActiveWriterRecoveryMessageId = (
+  input: Parameters<typeof getActiveWriterRecovery>[0],
+): string | null => getActiveWriterRecovery(input)?.messageId ?? null;
 
 export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
   return error === null ? null : `${threadKey}\u0000${error}`;
