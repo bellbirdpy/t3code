@@ -15,12 +15,10 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../../config.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -102,10 +100,13 @@ function importedThreadId(instance: ProviderInstance, providerThreadId: string):
   return importedThreadIdFor(instance.continuationIdentity.continuationKey, providerThreadId);
 }
 
-function unassignedProjectId(instance: ProviderInstance): ProjectId {
-  return ProjectId.make(
-    `provider-imports:${continuationIdentityDigest(instance.continuationIdentity.continuationKey)}`,
-  );
+function workspaceProjectId(workspaceRoot: string): ProjectId {
+  return ProjectId.make(`provider-workspace:${continuationIdentityDigest(workspaceRoot)}`);
+}
+
+function workspaceProjectTitle(workspaceRoot: string): string {
+  const withoutTrailingSeparators = workspaceRoot.replace(/[\\/]+$/, "");
+  return withoutTrailingSeparators.split(/[\\/]/).at(-1) || workspaceRoot;
 }
 
 function importCommandId(...parts: ReadonlyArray<string>): CommandId {
@@ -190,8 +191,6 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
     const directory = yield* ProviderSessionDirectory;
     const snapshots = yield* ProjectionSnapshotQuery;
     const engine = yield* OrchestrationEngineService;
-    const serverConfig = yield* ServerConfig;
-    const path = yield* Path.Path;
     const instances = yield* registry.listInstances;
     const bindings = yield* directory.listBindings();
     const discoveryCandidateGroups = groupPersistedThreadDiscoveryCandidates(instances);
@@ -322,11 +321,6 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
                 directory,
                 snapshots,
                 engine,
-                unassignedWorkspaceRoot: path.join(
-                  serverConfig.stateDir,
-                  "provider-imports",
-                  continuationIdentityDigest(instance.continuationIdentity.continuationKey),
-                ),
               }).pipe(
                 Effect.catchCause((cause) =>
                   recoverReconciliationCause(
@@ -374,7 +368,6 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
     readonly directory: ProviderSessionDirectory["Service"];
     readonly snapshots: ProjectionSnapshotQuery["Service"];
     readonly engine: OrchestrationEngineService["Service"];
-    readonly unassignedWorkspaceRoot: string;
   }) {
     const continuationKey = input.instance.continuationIdentity.continuationKey;
     const continuationIdentity = continuationIdentityDigest(continuationKey);
@@ -409,38 +402,21 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
       : Option.none();
     const projectId = Option.isSome(matchingProject)
       ? matchingProject.value.id
-      : unassignedProjectId(input.instance);
+      : managesImportedThread
+        ? workspaceProjectId(input.thread.cwd)
+        : Option.getOrThrow(existingThread).projectId;
 
     if (managesImportedThread && Option.isNone(matchingProject)) {
-      const existingUnassignedProject = yield* input.snapshots.getProjectShellById(projectId);
-      if (Option.isNone(existingUnassignedProject)) {
-        if (Option.isNone(existingThread)) {
-          yield* input.engine.dispatch({
-            type: "project.create",
-            commandId: importCommandId(continuationIdentity, "unassigned-project"),
-            projectId,
-            title: "Unassigned Codex threads",
-            workspaceRoot: input.unassignedWorkspaceRoot,
-            defaultModelSelection: { instanceId: input.instance.instanceId, model: input.model },
-            createdAt: input.thread.createdAt,
-          });
-        }
-      } else if (
-        existingUnassignedProject.value.defaultModelSelection?.instanceId !==
-          input.instance.instanceId ||
-        existingUnassignedProject.value.defaultModelSelection.model !== input.model
-      ) {
+      const existingWorkspaceProject = yield* input.snapshots.getProjectShellById(projectId);
+      if (Option.isNone(existingWorkspaceProject)) {
         yield* input.engine.dispatch({
-          type: "project.meta.update",
-          commandId: importCommandId(
-            continuationIdentity,
-            "unassigned-project",
-            "owner",
-            input.instance.instanceId,
-            input.model,
-          ),
+          type: "project.create",
+          commandId: importCommandId("workspace", continuationIdentityDigest(input.thread.cwd)),
           projectId,
+          title: workspaceProjectTitle(input.thread.cwd),
+          workspaceRoot: input.thread.cwd,
           defaultModelSelection: { instanceId: input.instance.instanceId, model: input.model },
+          createdAt: input.thread.createdAt,
         });
       }
     }
@@ -456,27 +432,32 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: Option.isSome(matchingProject) ? null : input.thread.cwd,
+        worktreePath: null,
         createdAt: input.thread.createdAt,
       });
-    } else if (
-      targetThreadId === expectedThreadId &&
-      Option.isSome(existingThread) &&
-      (existingThread.value.modelSelection.instanceId !== input.instance.instanceId ||
-        existingThread.value.modelSelection.model !== input.model)
-    ) {
-      yield* input.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: importCommandId(
-          continuationIdentity,
-          input.thread.providerThreadId,
-          "owner",
-          input.instance.instanceId,
-          input.model,
-        ),
-        threadId: targetThreadId,
-        modelSelection: { instanceId: input.instance.instanceId, model: input.model },
-      });
+    } else if (targetThreadId === expectedThreadId && Option.isSome(existingThread)) {
+      const ownerChanged =
+        existingThread.value.modelSelection.instanceId !== input.instance.instanceId ||
+        existingThread.value.modelSelection.model !== input.model;
+      const projectChanged = existingThread.value.projectId !== projectId;
+      if (ownerChanged || projectChanged) {
+        yield* input.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: importCommandId(
+            continuationIdentity,
+            input.thread.providerThreadId,
+            "metadata",
+            projectId,
+            input.instance.instanceId,
+            input.model,
+          ),
+          threadId: targetThreadId,
+          ...(projectChanged ? { projectId, worktreePath: null } : {}),
+          ...(ownerChanged
+            ? { modelSelection: { instanceId: input.instance.instanceId, model: input.model } }
+            : {}),
+        });
+      }
     }
 
     const existingDetail = Option.isSome(existingThread)
@@ -611,8 +592,6 @@ export const reconcilePersistedProviderThreadById = Effect.fn(
   const directory = yield* ProviderSessionDirectory;
   const snapshots = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
-  const serverConfig = yield* ServerConfig;
-  const path = yield* Path.Path;
   const bindingOption = yield* directory.getBinding(threadId);
   if (Option.isNone(bindingOption)) return false;
   const binding = bindingOption.value;
@@ -677,11 +656,6 @@ export const reconcilePersistedProviderThreadById = Effect.fn(
     directory,
     snapshots,
     engine,
-    unassignedWorkspaceRoot: path.join(
-      serverConfig.stateDir,
-      "provider-imports",
-      continuationIdentityDigest(continuationKey),
-    ),
   });
   return true;
 });
@@ -691,11 +665,9 @@ export const ProviderThreadReconcilerLive = Layer.effect(
   Effect.gen(function* () {
     const continuityContext = yield* Effect.context<
       | OrchestrationEngineService
-      | Path.Path
       | ProjectionSnapshotQuery
       | ProviderInstanceRegistry
       | ProviderSessionDirectory
-      | ServerConfig
     >();
     const registry = yield* ProviderInstanceRegistry;
     const changes = yield* registry.subscribeChanges;

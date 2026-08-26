@@ -6677,6 +6677,48 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("reconciles a warm-cache thread before capturing its replay head", () =>
+    Effect.gen(function* () {
+      const effects: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            reconcileThread: (threadId) =>
+              Effect.sync(() => {
+                effects.push(`reconcile:${threadId}`);
+                return true;
+              }),
+          },
+          orchestrationEngine: {
+            latestSequence: Effect.sync(() => {
+              effects.push("head");
+              return 0;
+            }),
+            readEvents: () => {
+              effects.push("replay");
+              return Stream.empty;
+            },
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const firstItem = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
+            reconcileBeforeReplay: true,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+
+      assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
+      assert.deepEqual(effects, [`reconcile:${defaultThreadId}`, "head", "replay"]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("subscribeShell sends a fresh snapshot instead of replaying a large gap", () =>
     Effect.gen(function* () {
       let readEventsCalls = 0;

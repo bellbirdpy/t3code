@@ -1483,6 +1483,20 @@ const makeWsRpcLayer = (
               // thread snapshot instead, exactly like subscribeShell above.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
+                // A cursor restored from client cache has not passed through
+                // the HTTP snapshot endpoint on this connection. Reconcile
+                // before capturing the replay head so any externally appended
+                // Codex turns are persisted and included in the catch-up.
+                if (input.reconcileBeforeReplay === true) {
+                  yield* providerThreadContinuity.reconcileThread(input.threadId).pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Failed to reconcile provider thread before replay", {
+                        threadId: input.threadId,
+                        detail: cause.message,
+                      }),
+                    ),
+                  );
+                }
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
