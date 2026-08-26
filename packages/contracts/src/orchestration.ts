@@ -362,6 +362,21 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE =
+  "This Codex session is open in another client. Close it there and retry, or continue in a copy.";
+
+export const CodexActiveWriterConflictActivityPayload = Schema.Struct({
+  messageId: MessageId,
+  canFork: Schema.Literal(true),
+  modelSelection: Schema.optional(ModelSelection),
+  titleSeed: Schema.optional(TrimmedNonEmptyString),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+});
+export type CodexActiveWriterConflictActivityPayload =
+  typeof CodexActiveWriterConflictActivityPayload.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -874,6 +889,15 @@ export const ThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTurnRecoverCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.recover"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  strategy: Schema.Literals(["retry", "fork"]),
+  createdAt: IsoDateTime,
+});
+
 const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -959,6 +983,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadTurnRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -987,6 +1012,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadTurnRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1303,6 +1329,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  continuationMode: Schema.optional(Schema.Literal("fork")),
   createdAt: IsoDateTime,
 });
 

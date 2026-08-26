@@ -34,7 +34,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
+  type ProviderServiceError,
+} from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -154,7 +158,7 @@ describe("ProviderCommandReactor", () => {
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly startSessionEffect?: (
       session: ProviderSession,
-    ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    ) => Effect.Effect<ProviderSession, ProviderServiceError>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -675,6 +679,211 @@ describe("ProviderCommandReactor", () => {
       thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       expect(thread?.session?.status).toBe("starting");
       expect(thread?.session?.lastError).toBeNull();
+    }),
+  );
+
+  effectIt.effect("projects an actionable conflict without leaking Codex writer details", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: () =>
+            Effect.fail(
+              new ProviderAdapterProcessError({
+                provider: "codex",
+                threadId: "thread-1",
+                detail:
+                  "thread provider-secret already has an active writer at file:///Users/example/secret.jsonl",
+              }),
+            ),
+        }),
+      );
+      const messageId = asMessageId("user-message-active-writer");
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-active-writer"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "continue this work",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const thread = (await harness.readModel()).threads.find(
+            (entry) => entry.id === ThreadId.make("thread-1"),
+          );
+          return thread?.session?.status === "error";
+        }),
+      );
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+
+      expect(thread?.session?.lastError).toBe(
+        "This Codex session is open in another client. Close it there and retry, or continue in a copy.",
+      );
+      expect(thread?.session?.lastError).not.toContain("provider-secret");
+      expect(thread?.session?.lastError).not.toContain("/Users/example");
+      expect(thread?.activities.at(-1)).toMatchObject({
+        kind: "provider.thread.active-writer-conflict",
+        summary: "Codex session is open elsewhere",
+        payload: {
+          detail:
+            "This Codex session is open in another client. Close it there and retry, or continue in a copy.",
+          messageId,
+          canFork: true,
+        },
+      });
+      expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    }),
+  );
+
+  effectIt.effect("retries the conflicted Codex turn without duplicating its user message", () =>
+    Effect.gen(function* () {
+      let writerIsActive = true;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: (session) =>
+            writerIsActive
+              ? Effect.fail(
+                  new ProviderAdapterProcessError({
+                    provider: "codex",
+                    threadId: "thread-1",
+                    detail: "thread provider-thread already has an active writer",
+                  }),
+                )
+              : Effect.succeed(session),
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const messageId = asMessageId("user-message-active-writer-retry");
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-active-writer-retry"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue exactly once",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-retry-selection",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+          return thread?.session?.status === "error";
+        }),
+      );
+
+      writerIsActive = false;
+      yield* harness.engine.dispatch({
+        type: "thread.turn.recover",
+        commandId: CommandId.make("cmd-turn-recover-active-writer-retry"),
+        threadId,
+        messageId,
+        strategy: "retry",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({ id: messageId, text: "continue exactly once" }),
+      ]);
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty(
+        "continuationMode",
+        "fork",
+      );
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-retry-selection",
+        },
+      });
+    }),
+  );
+
+  effectIt.effect("forks the conflicted Codex turn only when continuing in a copy", () =>
+    Effect.gen(function* () {
+      let writerIsActive = true;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: (session) =>
+            writerIsActive
+              ? Effect.fail(
+                  new ProviderAdapterProcessError({
+                    provider: "codex",
+                    threadId: "thread-1",
+                    detail: "thread provider-thread already has an active writer",
+                  }),
+                )
+              : Effect.succeed(session),
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const messageId = asMessageId("user-message-active-writer-fork");
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-active-writer-fork"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue in one copy",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+          return thread?.session?.status === "error";
+        }),
+      );
+
+      writerIsActive = false;
+      yield* harness.engine.dispatch({
+        type: "thread.turn.recover",
+        commandId: CommandId.make("cmd-turn-recover-active-writer-fork"),
+        threadId,
+        messageId,
+        strategy: "fork",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({ id: messageId, text: "continue in one copy" }),
+      ]);
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        continuationMode: "fork",
+      });
     }),
   );
 

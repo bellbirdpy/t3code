@@ -775,12 +775,60 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it.effect("forks only when the caller explicitly chooses to continue in a copy", () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        method: "thread/start" | "thread/resume" | "thread/fork";
+        payload: unknown;
+      }> = [];
+      const forked = makeThreadOpenResponse("forked-thread");
+      const client = {
+        request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(forked as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const opened = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "provider-thread",
+        continuationMode: "fork",
+      });
+
+      NodeAssert.equal(opened.thread.id, "forked-thread");
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/fork",
+          payload: {
+            threadId: "provider-thread",
+            cwd: "/tmp/project",
+            approvalPolicy: "never",
+            sandbox: "danger-full-access",
+            approvalsReviewer: "user",
+            model: "gpt-5.3-codex",
+          },
+        },
+      ]);
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
-      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+      const calls: Array<{
+        method: "thread/start" | "thread/resume" | "thread/fork";
+        payload: unknown;
+      }> = [];
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
-        request: <M extends "thread/start" | "thread/resume">(
+        request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
           method: M,
           payload: CodexRpc.ClientRequestParamsByMethod[M],
         ) => {
@@ -818,7 +866,7 @@ describe("openCodexThread", () => {
   it.effect("does not fork a fresh thread when the durable thread is owned elsewhere", () =>
     Effect.gen(function* () {
       const client = {
-        request: <M extends "thread/start" | "thread/resume">(
+        request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
           method: M,
           _payload: CodexRpc.ClientRequestParamsByMethod[M],
         ) => {

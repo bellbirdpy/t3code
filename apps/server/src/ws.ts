@@ -1606,6 +1606,12 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverStartProviderThreadSync]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartProviderThreadSync,
+            providerThreadContinuity.startSyncAll,
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerUploadFeedback,
@@ -1657,6 +1663,12 @@ const makeWsRpcLayer = (
                   Effect.forkScoped,
                 ),
             ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.subscribeProviderThreadSync]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeProviderThreadSync,
+            providerThreadContinuity.streamSyncStatus,
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>

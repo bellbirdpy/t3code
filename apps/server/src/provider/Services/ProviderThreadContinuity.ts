@@ -1,7 +1,8 @@
-import { ThreadId } from "@t3tools/contracts";
+import { type ProviderThreadSyncStatus, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type * as Stream from "effect/Stream";
 
 export class ProviderThreadContinuityError extends Schema.TaggedErrorClass<ProviderThreadContinuityError>()(
   "ProviderThreadContinuityError",
@@ -21,6 +22,9 @@ export interface ProviderThreadContinuityShape {
   readonly reconcileThread: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProviderThreadContinuityError>;
+  readonly startSyncAll: Effect.Effect<ProviderThreadSyncStatus>;
+  readonly getSyncStatus: Effect.Effect<ProviderThreadSyncStatus>;
+  readonly streamSyncStatus: Stream.Stream<ProviderThreadSyncStatus>;
 }
 
 export class ProviderThreadContinuity extends Context.Service<

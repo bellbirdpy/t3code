@@ -12,6 +12,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  type ProviderThreadSyncStatus,
   resolveProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
@@ -349,14 +350,32 @@ function AccessGatedProviderSettings({
       environmentId={environment.environmentId}
       environmentLabel={environment.label}
       readOnly={access.kind === "read-only"}
+      supportsProviderThreadSync={
+        environment.serverConfig?.environment.capabilities.providerThreadSync === true
+      }
     />
   );
+}
+
+function providerThreadSyncDescription(status: ProviderThreadSyncStatus): string {
+  if (status.status === "running") {
+    return status.phase === "discovering"
+      ? "Discovering persisted Codex sessions"
+      : `${status.progress.completed} of ${status.progress.total} sessions processed`;
+  }
+  if (status.status === "completed") {
+    const { organized, updated, unchanged, failed } = status.progress;
+    return `${organized} organized, ${updated} updated, ${unchanged} unchanged${failed > 0 ? `, ${failed} failed` : ""}`;
+  }
+  if (status.status === "failed") return status.message;
+  return "Organize every persisted Codex session and import external history changes.";
 }
 
 export function EnvironmentProviderSettings({
   environmentId,
   environmentLabel,
   readOnly = false,
+  supportsProviderThreadSync = true,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
@@ -367,6 +386,7 @@ export function EnvironmentProviderSettings({
    * every one of its writes from being offered and then rejected.
    */
   readonly readOnly?: boolean;
+  readonly supportsProviderThreadSync?: boolean;
 }) {
   const settings = useEnvironmentSettings(environmentId);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
@@ -378,6 +398,12 @@ export function EnvironmentProviderSettings({
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
     reportFailure: false,
   });
+  const providerThreadSyncStatus = useAtomValue(
+    serverEnvironment.providerThreadSyncStatusAtom(environmentId),
+  );
+  const startProviderThreadSync = useAtomCommand(serverEnvironment.startProviderThreadSync, {
+    reportFailure: false,
+  });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
@@ -386,6 +412,9 @@ export function EnvironmentProviderSettings({
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
   const updatingDriversRef = useRef<Set<ProviderDriverKind>>(new Set());
+  const hasCodexProvider = serverProviders.some(
+    (provider) => provider.driver === ProviderDriverKind.make("codex") && provider.installed,
+  );
 
   const providerUpdateCandidates = useMemo(
     () => collectProviderUpdateCandidates(serverProviders),
@@ -484,6 +513,21 @@ export function EnvironmentProviderSettings({
     },
     [environmentId, updateProvider],
   );
+
+  const synchronizeCodexSessions = useCallback(() => {
+    void (async () => {
+      const result = await startProviderThreadSync({ environmentId, input: {} });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not synchronize Codex sessions",
+            description: "The server could not start the Codex history synchronization.",
+          }),
+        );
+      }
+    })();
+  }, [environmentId, startProviderThreadSync]);
 
   interface InstanceRow {
     readonly instanceId: ProviderInstanceId;
@@ -792,6 +836,29 @@ export function EnvironmentProviderSettings({
               </div>
             }
           />
+
+          {supportsProviderThreadSync && hasCodexProvider && !readOnly ? (
+            <SettingsRow
+              title="Codex session history"
+              description={providerThreadSyncDescription(providerThreadSyncStatus)}
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label="Synchronize Codex sessions"
+                  disabled={providerThreadSyncStatus.status === "running"}
+                  onClick={synchronizeCodexSessions}
+                >
+                  {providerThreadSyncStatus.status === "running" ? (
+                    <LoaderIcon className="size-3.5 motion-safe:animate-spin" aria-hidden />
+                  ) : (
+                    <RefreshCwIcon className="size-3.5" aria-hidden />
+                  )}
+                  {providerThreadSyncStatus.status === "running" ? "Synchronizing" : "Synchronize"}
+                </Button>
+              }
+            />
+          ) : null}
 
           {rows.map((row) => {
             const driverOption = getDriverOption(row.driver);

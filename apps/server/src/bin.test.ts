@@ -17,6 +17,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
@@ -135,7 +136,12 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       Layer.provide(
         Layer.succeed(
           ProviderThreadContinuity,
-          ProviderThreadContinuity.of({ reconcileThread: () => Effect.succeed(false) }),
+          ProviderThreadContinuity.of({
+            reconcileThread: () => Effect.succeed(false),
+            startSyncAll: Effect.succeed({ status: "idle" }),
+            getSyncStatus: Effect.succeed({ status: "idle" }),
+            streamSyncStatus: Stream.make({ status: "idle" }),
+          }),
         ),
       ),
       Layer.provideMerge(

@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ProviderThreadSyncStatus,
   ServerConfig,
   ServerProvider,
   ServerProviders,
@@ -12,6 +13,7 @@ const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
+const decodeProviderThreadSyncStatus = Schema.decodeUnknownSync(ProviderThreadSyncStatus);
 
 const baseProviderSnapshot = {
   instanceId: "codex",
@@ -114,6 +116,38 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
+  });
+});
+
+describe("ProviderThreadSyncStatus", () => {
+  it("decodes reconnectable reconciliation progress", () => {
+    expect(
+      decodeProviderThreadSyncStatus({
+        status: "running",
+        phase: "reconciling",
+        startedAt: "2026-08-26T20:00:00.000Z",
+        progress: {
+          total: 91,
+          completed: 18,
+          organized: 12,
+          updated: 4,
+          unchanged: 2,
+          failed: 0,
+        },
+      }),
+    ).toEqual({
+      status: "running",
+      phase: "reconciling",
+      startedAt: "2026-08-26T20:00:00.000Z",
+      progress: {
+        total: 91,
+        completed: 18,
+        organized: 12,
+        updated: 4,
+        unchanged: 2,
+        failed: 0,
+      },
+    });
   });
 });
 

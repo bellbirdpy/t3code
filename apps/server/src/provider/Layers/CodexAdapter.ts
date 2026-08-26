@@ -1690,6 +1690,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.continuationMode === "fork" ? { continuationMode: "fork" as const } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -1897,11 +1898,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         {
           excludeProviderThreadIds: input?.excludeProviderThreadIds ?? new Set(),
           cursorByProviderThreadId: input?.cursorByProviderThreadId ?? new Map(),
-          stopAfterKnownPage: completedInitialPersistedDiscovery,
+          stopAfterKnownPage:
+            input?.includeUnchangedMetadata === true ? false : completedInitialPersistedDiscovery,
+          ...(input?.includeUnchangedMetadata !== undefined
+            ? { includeUnchangedMetadata: input.includeUnchangedMetadata }
+            : {}),
         },
-        completedInitialPersistedDiscovery
+        input?.includeUnchangedMetadata === true
           ? undefined
-          : { startCursor: initialPersistedDiscoveryCursor, maxPages: 1 },
+          : completedInitialPersistedDiscovery
+            ? undefined
+            : { startCursor: initialPersistedDiscoveryCursor, maxPages: 1 },
       ).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {

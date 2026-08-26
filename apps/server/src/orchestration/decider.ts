@@ -1,4 +1,5 @@
 import {
+  CodexActiveWriterConflictActivityPayload,
   EventId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -8,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -23,6 +25,9 @@ import {
 import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const isCodexActiveWriterConflictActivityPayload = Schema.is(
+  CodexActiveWriterConflictActivityPayload,
+);
 
 // Session adoption takes seconds; a user message still unadopted after this
 // window is a failed/stale start, not pending work. Mirrors the client's
@@ -1045,6 +1050,60 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+    }
+
+    case "thread.turn.recover": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = thread.messages.find(
+        (entry) => entry.id === command.messageId && entry.role === "user",
+      );
+      const conflict = thread.activities.findLast(
+        (activity) => activity.kind === "provider.thread.active-writer-conflict",
+      );
+      const conflictPayload =
+        conflict !== undefined && isCodexActiveWriterConflictActivityPayload(conflict.payload)
+          ? conflict.payload
+          : null;
+      if (
+        message === undefined ||
+        thread.session?.status !== "error" ||
+        conflictPayload?.messageId !== command.messageId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has no recoverable active-writer conflict for message '${command.messageId}'.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          ...(conflictPayload.modelSelection !== undefined
+            ? { modelSelection: conflictPayload.modelSelection }
+            : {}),
+          ...(conflictPayload.titleSeed !== undefined
+            ? { titleSeed: conflictPayload.titleSeed }
+            : {}),
+          runtimeMode: conflictPayload.runtimeMode,
+          interactionMode: conflictPayload.interactionMode,
+          ...(conflictPayload.sourceProposedPlan !== undefined
+            ? { sourceProposedPlan: conflictPayload.sourceProposedPlan }
+            : {}),
+          ...(command.strategy === "fork" ? { continuationMode: "fork" as const } : {}),
+          createdAt: command.createdAt,
+        },
+      };
     }
 
     case "thread.turn.interrupt": {

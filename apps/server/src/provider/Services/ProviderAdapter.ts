@@ -69,6 +69,12 @@ export interface ProviderPersistedThreadDiscoveryInput {
   readonly cursorByProviderThreadId: ReadonlyMap<string, string>;
   /** Stop paging once a full page contains no new or changed eligible threads. */
   readonly stopAfterKnownPage?: boolean;
+  /**
+   * Return unchanged visible threads as metadata-only snapshots while paging the
+   * complete provider history. This lets an explicit maintenance pass organize
+   * old sessions without re-reading every transcript.
+   */
+  readonly includeUnchangedMetadata?: boolean;
 }
 
 export interface ProviderAdapterShape<TError> {

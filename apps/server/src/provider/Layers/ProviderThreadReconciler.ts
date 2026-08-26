@@ -6,6 +6,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   MessageId,
   ProjectId,
+  type ProviderThreadSyncProgress,
   ProviderDriverKind,
   ThreadId,
   TurnId,
@@ -16,12 +17,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { forkParked } from "../../serverActivation.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -30,6 +33,7 @@ import {
   ProviderThreadContinuityError,
 } from "../Services/ProviderThreadContinuity.ts";
 import type { ProviderPersistedThread } from "../Services/ProviderAdapter.ts";
+import { makeProviderThreadSyncCoordinator } from "./ProviderThreadSyncCoordinator.ts";
 
 const CODEX = ProviderDriverKind.make("codex");
 const ACTIVE_RECONCILE_INTERVAL = Duration.seconds(30);
@@ -186,7 +190,13 @@ export function groupPersistedThreadDiscoveryCandidates(
 }
 
 export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedProviderThreads")(
-  function* () {
+  function* (
+    options: {
+      readonly includeUnchangedMetadata?: boolean;
+      readonly resolveWorkspaceRoot?: (cwd: string) => Effect.Effect<string>;
+      readonly onProgress?: (progress: ProviderThreadSyncProgress) => Effect.Effect<void>;
+    } = {},
+  ) {
     const registry = yield* ProviderInstanceRegistry;
     const directory = yield* ProviderSessionDirectory;
     const snapshots = yield* ProjectionSnapshotQuery;
@@ -206,6 +216,14 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
     const cursorByThreadIdByContinuation = new Map<string, Map<string, string>>();
     const importedOwnerInstanceIdsByContinuation = new Map<string, Set<string>>();
     const unresolvedNativeProviderThreadIds = new Set<string>();
+    const progress = yield* Ref.make<ProviderThreadSyncProgress>({
+      total: 0,
+      completed: 0,
+      organized: 0,
+      updated: 0,
+      unchanged: 0,
+      failed: 0,
+    });
 
     for (const binding of bindings) {
       if (
@@ -253,7 +271,7 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
       }
     }
 
-    const discoveredCounts = yield* Effect.forEach(
+    yield* Effect.forEach(
       discoveryCandidateGroups,
       (candidates) =>
         Effect.gen(function* () {
@@ -288,6 +306,9 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
                 cursorByProviderThreadId: ownerChanged
                   ? new Map()
                   : (cursorByThreadIdByContinuation.get(continuationKey) ?? new Map()),
+                ...(options.includeUnchangedMetadata !== undefined
+                  ? { includeUnchangedMetadata: options.includeUnchangedMetadata }
+                  : {}),
               });
               return { instance, model, discovered } as const;
             }).pipe(
@@ -310,31 +331,53 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
           if (!selected) return 0;
           const { instance, model, discovered } = selected;
 
+          yield* Ref.update(progress, (current) => ({
+            ...current,
+            total: current.total + discovered.length,
+          }));
+
           yield* Effect.forEach(
             discovered,
             (thread) =>
-              reconcilePersistedThread({
-                instance,
-                thread,
-                model,
-                threadByProviderIdentity,
-                directory,
-                snapshots,
-                engine,
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  recoverReconciliationCause(
-                    cause,
-                    "skipped persisted provider thread during reconciliation",
-                    {
-                      provider: instance.driverKind,
-                      providerInstanceId: instance.instanceId,
-                      providerThreadId: thread.providerThreadId,
-                    },
-                    undefined,
+              Effect.gen(function* () {
+                const workspaceRoot = options.resolveWorkspaceRoot
+                  ? yield* options.resolveWorkspaceRoot(thread.cwd)
+                  : thread.cwd;
+                const outcome = yield* reconcilePersistedThread({
+                  instance,
+                  thread,
+                  workspaceRoot,
+                  model,
+                  threadByProviderIdentity,
+                  directory,
+                  snapshots,
+                  engine,
+                }).pipe(
+                  Effect.map(Option.some),
+                  Effect.catchCause((cause) =>
+                    recoverReconciliationCause(
+                      cause,
+                      "skipped persisted provider thread during reconciliation",
+                      {
+                        provider: instance.driverKind,
+                        providerInstanceId: instance.instanceId,
+                        providerThreadId: thread.providerThreadId,
+                      },
+                      Option.none(),
+                    ),
                   ),
-                ),
-              ),
+                );
+                const next = yield* Ref.modify(progress, (current) => {
+                  const key = Option.isSome(outcome) ? outcome.value : "failed";
+                  const updated = {
+                    ...current,
+                    completed: current.completed + 1,
+                    [key]: current[key] + 1,
+                  };
+                  return [updated, updated] as const;
+                });
+                if (options.onProgress) yield* options.onProgress(next);
+              }),
             { concurrency: 1, discard: true },
           );
           return discovered.length;
@@ -355,7 +398,9 @@ export const reconcilePersistedProviderThreads = Effect.fn("reconcilePersistedPr
         ),
       { concurrency: "unbounded" },
     );
-    return discoveredCounts.reduce((total, count) => total + count, 0);
+    const result = yield* Ref.get(progress);
+    if (result.completed === 0 && options.onProgress) yield* options.onProgress(result);
+    return result;
   },
 );
 
@@ -363,12 +408,16 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
   function* (input: {
     readonly instance: ProviderInstance;
     readonly thread: ProviderPersistedThread;
+    readonly workspaceRoot?: string;
     readonly model: string;
     readonly threadByProviderIdentity: Map<string, ThreadId>;
     readonly directory: ProviderSessionDirectory["Service"];
     readonly snapshots: ProjectionSnapshotQuery["Service"];
     readonly engine: OrchestrationEngineService["Service"];
   }) {
+    const workspaceRoot = input.workspaceRoot ?? input.thread.cwd;
+    let organized = false;
+    let updated = false;
     const continuationKey = input.instance.continuationIdentity.continuationKey;
     const continuationIdentity = continuationIdentityDigest(continuationKey);
     const identity = providerIdentityKey(continuationKey, input.thread.providerThreadId);
@@ -394,27 +443,28 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
           sourceMetadata: input.thread.sourceMetadata,
         },
       });
-      return;
+      return "unchanged" as const;
     }
 
     const matchingProject = managesImportedThread
-      ? yield* input.snapshots.getActiveProjectByWorkspaceRoot(input.thread.cwd)
+      ? yield* input.snapshots.getActiveProjectByWorkspaceRoot(workspaceRoot)
       : Option.none();
     const projectId = Option.isSome(matchingProject)
       ? matchingProject.value.id
       : managesImportedThread
-        ? workspaceProjectId(input.thread.cwd)
+        ? workspaceProjectId(workspaceRoot)
         : Option.getOrThrow(existingThread).projectId;
 
     if (managesImportedThread && Option.isNone(matchingProject)) {
       const existingWorkspaceProject = yield* input.snapshots.getProjectShellById(projectId);
       if (Option.isNone(existingWorkspaceProject)) {
+        organized = true;
         yield* input.engine.dispatch({
           type: "project.create",
-          commandId: importCommandId("workspace", continuationIdentityDigest(input.thread.cwd)),
+          commandId: importCommandId("workspace", continuationIdentityDigest(workspaceRoot)),
           projectId,
-          title: workspaceProjectTitle(input.thread.cwd),
-          workspaceRoot: input.thread.cwd,
+          title: workspaceProjectTitle(workspaceRoot),
+          workspaceRoot,
           defaultModelSelection: { instanceId: input.instance.instanceId, model: input.model },
           createdAt: input.thread.createdAt,
         });
@@ -422,6 +472,7 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
     }
 
     if (importsNewThread && Option.isNone(existingThread)) {
+      organized = true;
       yield* input.engine.dispatch({
         type: "thread.create",
         commandId: importCommandId(continuationIdentity, input.thread.providerThreadId, "create"),
@@ -441,6 +492,8 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
         existingThread.value.modelSelection.model !== input.model;
       const projectChanged = existingThread.value.projectId !== projectId;
       if (ownerChanged || projectChanged) {
+        organized ||= projectChanged;
+        updated ||= ownerChanged;
         yield* input.engine.dispatch({
           type: "thread.meta.update",
           commandId: importCommandId(
@@ -530,6 +583,7 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
       }
       return true;
     });
+    updated ||= missingMessages.length > 0;
 
     yield* Effect.forEach(
       missingMessages,
@@ -582,6 +636,11 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
       },
     });
     input.threadByProviderIdentity.set(identity, targetThreadId);
+    return organized
+      ? ("organized" as const)
+      : updated
+        ? ("updated" as const)
+        : ("unchanged" as const);
   },
 );
 
@@ -670,6 +729,7 @@ export const ProviderThreadReconcilerLive = Layer.effect(
       | ProviderSessionDirectory
     >();
     const registry = yield* ProviderInstanceRegistry;
+    const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
     const changes = yield* registry.subscribeChanges;
     const reconcileSemaphore = yield* Semaphore.make(1);
     const reconcileAll = reconcileSemaphore.withPermits(1)(
@@ -680,7 +740,14 @@ export const ProviderThreadReconcilerLive = Layer.effect(
             cause,
             "persisted provider thread reconciliation failed",
             {},
-            0,
+            {
+              total: 0,
+              completed: 0,
+              organized: 0,
+              updated: 0,
+              unchanged: 0,
+              failed: 0,
+            },
           ),
         ),
       ),
@@ -706,18 +773,36 @@ export const ProviderThreadReconcilerLive = Layer.effect(
           ),
         );
     });
+    const resolveWorkspaceRoot = (cwd: string) =>
+      repositoryIdentityResolver
+        .resolve(cwd)
+        .pipe(Effect.map((identity) => identity?.rootPath ?? cwd));
+    const syncCoordinator = yield* makeProviderThreadSyncCoordinator((onProgress) =>
+      reconcileSemaphore.withPermits(1)(
+        reconcilePersistedProviderThreads({
+          includeUnchangedMetadata: true,
+          resolveWorkspaceRoot,
+          onProgress,
+        }).pipe(Effect.provideContext(continuityContext)),
+      ),
+    );
 
     yield* forkParked(
       Effect.forever(
         reconcileAll.pipe(
-          Effect.flatMap((discoveredCount) =>
-            Effect.sleep(discoveredCount > 0 ? ACTIVE_RECONCILE_INTERVAL : IDLE_RECONCILE_INTERVAL),
+          Effect.flatMap((progress) =>
+            Effect.sleep(progress.total > 0 ? ACTIVE_RECONCILE_INTERVAL : IDLE_RECONCILE_INTERVAL),
           ),
         ),
       ),
     );
     yield* forkParked(Effect.forever(PubSub.take(changes).pipe(Effect.andThen(reconcileAll))));
 
-    return ProviderThreadContinuity.of({ reconcileThread });
+    return ProviderThreadContinuity.of({
+      reconcileThread,
+      startSyncAll: syncCoordinator.start,
+      getSyncStatus: syncCoordinator.getStatus,
+      streamSyncStatus: syncCoordinator.changes,
+    });
   }),
 );

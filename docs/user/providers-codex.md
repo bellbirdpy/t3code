@@ -31,15 +31,31 @@ codex login
 ## Continue Codex Work In T3 Code
 
 T3 Code automatically discovers durable conversations created by Codex CLI and other Codex clients
-that use the same `CODEX_HOME`. Conversations whose working directory matches a T3 Code project
-appear in that project. Other conversations appear under **Unassigned Codex threads**. A new
-external conversation can take up to two minutes to appear.
+that use the same `CODEX_HOME`. It groups them by Git repository root when available, with the
+conversation's working directory as a fallback, and creates the missing T3 Code project
+automatically. A new external conversation can take up to two minutes to appear.
+
+To organize the complete existing history immediately, open **Settings → Providers** and choose
+**Synchronize** under **Codex session history**. The operation continues on the server if you leave
+Settings or reconnect from another device. Its progress shows how many sessions were processed and
+how many were organized, updated, unchanged, or failed.
 
 You can also start a thread in T3 Code, continue it in Codex CLI or the Codex app, and return to the
 same T3 Code thread. T3 Code refreshes the durable Codex history when the thread opens and again
 before it sends your next message. If that refresh fails, T3 Code does not send the new message, so
 it cannot silently fork the conversation from stale history. Retry after the Codex thread is
 available again.
+
+Codex allows only one client to write to a conversation at a time. If the conversation is still
+open in Codex CLI or the Codex app, T3 Code keeps your message pending and explains the two safe
+choices:
+
+- Close the owning Codex client cleanly — use `/exit` in Codex CLI when applicable — then choose
+  **I've closed it — retry** to continue the same conversation.
+- Choose **Continue in a copy** to create a separate Codex conversation without closing the
+  original.
+
+Retry and copy both reuse the pending message; neither adds a duplicate to the T3 Code transcript.
 
 ## Send feedback to OpenAI
 

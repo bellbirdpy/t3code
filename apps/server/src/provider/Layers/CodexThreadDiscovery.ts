@@ -44,17 +44,24 @@ function discoveryCursorForThread(
   return `${unixSecondsToIso(thread.updatedAt)}:${thread.status.type}`;
 }
 
+function isVisibleCodexThread(
+  thread: EffectCodexSchema.V2ThreadListResponse["data"][number],
+  discoveryInput?: ProviderPersistedThreadDiscoveryInput,
+): boolean {
+  return !(
+    thread.ephemeral ||
+    (typeof thread.source === "object" && "subAgent" in thread.source) ||
+    thread.threadSource === "memory_consolidation" ||
+    discoveryInput?.excludeProviderThreadIds.has(thread.id) === true
+  );
+}
+
 export function selectCodexThreadsForRead(
   threads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>,
   discoveryInput?: ProviderPersistedThreadDiscoveryInput,
 ): ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]> {
   return threads.filter((thread) => {
-    if (
-      thread.ephemeral ||
-      (typeof thread.source === "object" && "subAgent" in thread.source) ||
-      thread.threadSource === "memory_consolidation" ||
-      discoveryInput?.excludeProviderThreadIds.has(thread.id) === true
-    ) {
+    if (!isVisibleCodexThread(thread, discoveryInput)) {
       return false;
     }
     const knownCursor = discoveryInput?.cursorByProviderThreadId.get(thread.id);
@@ -156,6 +163,43 @@ export function readCodexThreadSnapshots<E>(
   ).pipe(Effect.map((threads) => threads.filter(Option.isSome).map((thread) => thread.value)));
 }
 
+function toPersistedThreadMetadata(
+  thread: EffectCodexSchema.V2ThreadListResponse["data"][number],
+): ProviderPersistedThread {
+  return {
+    providerThreadId: thread.id,
+    cwd: thread.cwd,
+    title: titleForThread(thread as EffectCodexSchema.V2ThreadReadResponse["thread"]),
+    createdAt: unixSecondsToIso(thread.createdAt),
+    updatedAt: unixSecondsToIso(thread.updatedAt),
+    discoveryCursor: discoveryCursorForThread(thread),
+    sourceMetadata: {
+      source: thread.source,
+      threadSource: thread.threadSource ?? null,
+      status: thread.status,
+      sessionId: thread.sessionId,
+      forkedFromId: thread.forkedFromId ?? null,
+      parentThreadId: thread.parentThreadId ?? null,
+      cliVersion: thread.cliVersion,
+      modelProvider: thread.modelProvider,
+      gitInfo: thread.gitInfo ?? null,
+    },
+    messages: [],
+  };
+}
+
+export function materializeCodexPersistedThreads<E>(
+  listed: {
+    readonly threads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>;
+    readonly metadataThreads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>;
+  },
+  readThread: (threadId: string) => Effect.Effect<EffectCodexSchema.V2ThreadReadResponse, E>,
+): Effect.Effect<ReadonlyArray<ProviderPersistedThread>> {
+  return readCodexThreadSnapshots(listed.threads, readThread).pipe(
+    Effect.map((threads) => [...threads, ...listed.metadataThreads.map(toPersistedThreadMetadata)]),
+  );
+}
+
 const makeCodexDiscoveryClient = Effect.fn("makeCodexDiscoveryClient")(function* (
   config: CodexSettings,
   environment?: NodeJS.ProcessEnv,
@@ -234,12 +278,14 @@ export const listCodexThreadsForRead = <E>(
 ): Effect.Effect<
   {
     readonly threads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>;
+    readonly metadataThreads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>;
     readonly nextCursor: string | null;
   },
   E
 > =>
   Effect.gen(function* () {
     const selected: Array<EffectCodexSchema.V2ThreadListResponse["data"][number]> = [];
+    const metadataThreads: Array<EffectCodexSchema.V2ThreadListResponse["data"][number]> = [];
     let cursor: string | null | undefined = pagination?.startCursor;
     let pagesRead = 0;
     do {
@@ -247,15 +293,27 @@ export const listCodexThreadsForRead = <E>(
       pagesRead += 1;
       const changed = selectCodexThreadsForRead(page.data, discoveryInput);
       selected.push(...changed);
+      if (discoveryInput?.includeUnchangedMetadata === true) {
+        const changedIds = new Set(changed.map((thread) => thread.id));
+        metadataThreads.push(
+          ...page.data.filter(
+            (thread) => isVisibleCodexThread(thread, discoveryInput) && !changedIds.has(thread.id),
+          ),
+        );
+      }
       cursor = page.nextCursor;
-      if (discoveryInput?.stopAfterKnownPage === true && changed.length === 0) {
+      if (
+        discoveryInput?.stopAfterKnownPage === true &&
+        discoveryInput.includeUnchangedMetadata !== true &&
+        changed.length === 0
+      ) {
         break;
       }
       if (pagination?.maxPages !== undefined && pagesRead >= pagination.maxPages) {
         break;
       }
     } while (cursor);
-    return { threads: selected, nextCursor: cursor ?? null };
+    return { threads: selected, metadataThreads, nextCursor: cursor ?? null };
   }).pipe(Effect.withSpan("listCodexThreadsForRead"));
 
 export const discoverCodexThreads = Effect.fn("discoverCodexThreads")(function* (
@@ -280,7 +338,7 @@ export const discoverCodexThreads = Effect.fn("discoverCodexThreads")(function* 
     pagination,
   );
 
-  const threads = yield* readCodexThreadSnapshots(listed.threads, (threadId) =>
+  const threads = yield* materializeCodexPersistedThreads(listed, (threadId) =>
     client.request("thread/read", { threadId, includeTurns: true }),
   );
   return { threads, nextCursor: listed.nextCursor };

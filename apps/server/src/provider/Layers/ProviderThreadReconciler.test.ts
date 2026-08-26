@@ -11,16 +11,19 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import type { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
-import type { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import type { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { ProviderSessionDirectory as ProviderSessionDirectoryService } from "../Services/ProviderSessionDirectory.ts";
 import type { ProviderPersistedThread } from "../Services/ProviderAdapter.ts";
 import {
   groupPersistedThreadDiscoveryCandidates,
   providerThreadDiscoveryExclusions,
   continuationIdentityDigest,
   recoverReconciliationCause,
+  reconcilePersistedProviderThreads,
   reconcilePersistedThread,
   resolvePersistedContinuationKey,
 } from "./ProviderThreadReconciler.ts";
@@ -134,6 +137,104 @@ it.effect("does not recover a reconciliation interruption", () =>
   }),
 );
 
+it.effect("runs an explicit metadata backfill and reports organized progress", () =>
+  Effect.gen(function* () {
+    const discoveryInputs: unknown[] = [];
+    const progress: unknown[] = [];
+    const syncInstance = {
+      ...instance,
+      enabled: true,
+      adapter: {
+        discoverPersistedThreads: (input: unknown) =>
+          Effect.sync(() => {
+            discoveryInputs.push(input);
+            return [persistedThread];
+          }),
+      },
+      snapshot: {
+        getSnapshot: Effect.succeed({
+          models: [{ slug: "gpt-5.6-sol", isDefault: true }],
+        }),
+      },
+    } as unknown as ProviderInstance;
+    const commands: OrchestrationCommand[] = [];
+
+    const summary = yield* reconcilePersistedProviderThreads({
+      includeUnchangedMetadata: true,
+      onProgress: (next) =>
+        Effect.sync(() => {
+          progress.push(next);
+        }),
+    }).pipe(
+      Effect.provideService(ProviderInstanceRegistry, {
+        listInstances: Effect.succeed([syncInstance]),
+      } as unknown as ProviderInstanceRegistry["Service"]),
+      Effect.provideService(ProviderSessionDirectoryService, {
+        listBindings: () =>
+          Effect.succeed([
+            {
+              threadId: importedThreadId,
+              provider: ProviderDriverKind.make("codex"),
+              providerInstanceId: instance.instanceId,
+              resumeCursor: { threadId: PROVIDER_THREAD_ID },
+              runtimePayload: {
+                imported: true,
+                continuationKey: CONTINUATION_KEY,
+                providerDiscoveryCursor: persistedThread.discoveryCursor,
+              },
+              lastSeenAt: persistedThread.updatedAt,
+            },
+          ]),
+        upsert: () => Effect.void,
+      } as unknown as ProviderSessionDirectory["Service"]),
+      Effect.provideService(ProjectionSnapshotQuery, {
+        getThreadShellById: () =>
+          Effect.succeed(
+            Option.some({
+              id: importedThreadId,
+              projectId: "provider-imports:legacy",
+              modelSelection: { instanceId: instance.instanceId, model: "gpt-5.6-sol" },
+            }),
+          ),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+        getProjectShellById: () => Effect.succeed(Option.none()),
+        getThreadDetailById: () =>
+          Effect.succeed(
+            Option.some({
+              messages: persistedThread.messages.map((message) => ({
+                id: message.id,
+                role: message.role,
+                text: message.text,
+              })),
+            }),
+          ),
+      } as unknown as ProjectionSnapshotQuery["Service"]),
+      Effect.provideService(OrchestrationEngineService, {
+        dispatch: (command: OrchestrationCommand) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          }),
+      } as unknown as OrchestrationEngineService["Service"]),
+    );
+
+    expect(discoveryInputs).toEqual([expect.objectContaining({ includeUnchangedMetadata: true })]);
+    expect(summary).toEqual({
+      total: 1,
+      completed: 1,
+      organized: 1,
+      updated: 0,
+      unchanged: 0,
+      failed: 0,
+    });
+    expect(progress).toEqual([summary]);
+    expect(commands.map((command) => command.type)).toEqual([
+      "project.create",
+      "thread.meta.update",
+    ]);
+  }),
+);
+
 it.effect("creates a project for an unmatched Codex workspace", () =>
   Effect.gen(function* () {
     const commands: OrchestrationCommand[] = [];
@@ -161,7 +262,7 @@ it.effect("creates a project for an unmatched Codex workspace", () =>
     } as unknown as ProjectionSnapshotQuery["Service"];
     const identities = new Map<string, ThreadId>();
 
-    yield* reconcilePersistedThread({
+    const outcome = yield* reconcilePersistedThread({
       instance,
       thread: persistedThread,
       model: "gpt-5.6-sol",
@@ -213,6 +314,46 @@ it.effect("creates a project for an unmatched Codex workspace", () =>
         imported: true,
         providerDiscoveryCursor: "2026-08-21T03:24:43.000Z:idle",
       },
+    });
+    expect(outcome).toBe("organized");
+  }),
+);
+
+it.effect("groups a Codex subdirectory session under its resolved Git root", () =>
+  Effect.gen(function* () {
+    const commands: OrchestrationCommand[] = [];
+
+    yield* reconcilePersistedThread({
+      instance,
+      thread: { ...persistedThread, cwd: "/work/repository/packages/client" },
+      workspaceRoot: "/work/repository",
+      model: "gpt-5.6-sol",
+      threadByProviderIdentity: new Map(),
+      directory: {
+        upsert: () => Effect.void,
+      } as unknown as ProviderSessionDirectory["Service"],
+      snapshots: {
+        getThreadShellById: () => Effect.succeed(Option.none()),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+        getProjectShellById: () => Effect.succeed(Option.none()),
+      } as unknown as ProjectionSnapshotQuery["Service"],
+      engine: {
+        dispatch: (command: OrchestrationCommand) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          }),
+      } as unknown as OrchestrationEngineService["Service"],
+    });
+
+    expect(commands[0]).toMatchObject({
+      type: "project.create",
+      title: "repository",
+      workspaceRoot: "/work/repository",
+    });
+    expect(commands[1]).toMatchObject({
+      type: "thread.create",
+      projectId: `provider-workspace:${continuationIdentityDigest("/work/repository")}`,
     });
   }),
 );

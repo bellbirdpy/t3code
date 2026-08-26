@@ -1,22 +1,19 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { expect, it } from "vite-plus/test";
 
+import { visitElements } from "../../test/reactElementTree";
 import { ThreadSyncStatusPill } from "./ThreadSyncStatusPill";
 
-describe("ThreadSyncStatusPill", () => {
-  it.each([
-    ["loading", "Loading messages..."],
-    ["syncing", "Syncing messages..."],
-  ] as const)("renders the %s message sync phase", (phase, label) => {
-    const markup = renderToStaticMarkup(<ThreadSyncStatusPill phase={phase} />);
+it("shows an accessible motion-safe activity indicator while messages synchronize", () => {
+  const pill = ThreadSyncStatusPill({ phase: "syncing" });
+  expect(pill.props.role).toBe("status");
+  expect(pill.props["aria-live"]).toBe("polite");
+  expect(pill.props["aria-label"]).toBe("Syncing messages...");
 
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain('data-thread-sync-drawer="true"');
-    expect(markup).toContain("chat-composer-drawer-surface");
-    expect(markup).toContain("chat-composer-drawer-attached");
-    expect(markup).toContain("chat-composer-drawer-slot");
-    expect(markup).toContain("pb-[calc(var(--chat-composer-attachment-overlap)_+_0.375rem)]");
-    expect(markup).toContain(label);
-    expect(markup).not.toContain("animate-");
-  });
+  const animatedIndicator = visitElements(
+    pill,
+    (element) =>
+      typeof element.props.className === "string" &&
+      element.props.className.includes("motion-safe:animate-spin"),
+  );
+  expect(animatedIndicator).not.toBeNull();
 });

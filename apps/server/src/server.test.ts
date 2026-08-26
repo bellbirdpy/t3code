@@ -655,6 +655,9 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderThreadContinuity.ProviderThreadContinuity)({
             reconcileThread: () => Effect.succeed(false),
+            startSyncAll: Effect.succeed({ status: "idle" }),
+            getSyncStatus: Effect.succeed({ status: "idle" }),
+            streamSyncStatus: Stream.make({ status: "idle" }),
             ...options?.layers?.providerThreadContinuity,
           }),
         ),
@@ -4491,6 +4494,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.deepStrictEqual(response, { feedbackId: "codex-thread-feedback" });
       assert.deepStrictEqual(uploadFeedback.mock.calls, [[input]]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("starts Codex history synchronization remotely and streams server-owned progress", () =>
+    Effect.gen(function* () {
+      const running = {
+        status: "running" as const,
+        phase: "reconciling" as const,
+        startedAt: "2026-08-26T20:00:00.000Z",
+        progress: {
+          total: 91,
+          completed: 18,
+          organized: 12,
+          updated: 4,
+          unchanged: 2,
+          failed: 0,
+        },
+      };
+      const completed = {
+        status: "completed" as const,
+        startedAt: running.startedAt,
+        finishedAt: "2026-08-26T20:01:00.000Z",
+        progress: { ...running.progress, completed: 91, organized: 80, unchanged: 7 },
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            startSyncAll: Effect.succeed(running),
+            getSyncStatus: Effect.succeed(running),
+            streamSyncStatus: Stream.make(running, completed),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const started = yield* client[WS_METHODS.serverStartProviderThreadSync]({});
+            const progress = yield* client[WS_METHODS.subscribeProviderThreadSync]({}).pipe(
+              Stream.runCollect,
+            );
+            return { started, progress: Array.from(progress) };
+          }),
+        ),
+      );
+
+      assert.deepStrictEqual(result, { started: running, progress: [running, completed] });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

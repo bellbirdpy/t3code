@@ -4,6 +4,7 @@ import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import {
   listCodexThreadsForRead,
+  materializeCodexPersistedThreads,
   readCodexThreadSnapshots,
   selectCodexThreadsForRead,
   toPersistedThread,
@@ -240,6 +241,84 @@ it.effect("stops incremental paging after the first fully known page", () =>
 
     expect(result.threads.map((thread) => thread.id)).toEqual(["new"]);
     expect(requestedCursors).toEqual([undefined, "known-page"]);
+  }),
+);
+
+it.effect("returns unchanged visible threads as metadata during an explicit full scan", () =>
+  Effect.gen(function* () {
+    const requestedCursors: Array<string | undefined> = [];
+    const known = makeListedThread("known");
+    const pages = new Map<string | undefined, EffectCodexSchema.V2ThreadListResponse>([
+      [
+        undefined,
+        {
+          data: [known, makeListedThread("new")],
+          nextCursor: "older-page",
+        } as EffectCodexSchema.V2ThreadListResponse,
+      ],
+      [
+        "older-page",
+        {
+          data: [
+            makeListedThread("older-known"),
+            makeListedThread("ephemeral", { ephemeral: true }),
+          ],
+          nextCursor: null,
+        } as EffectCodexSchema.V2ThreadListResponse,
+      ],
+    ]);
+
+    const result = yield* listCodexThreadsForRead(
+      {
+        excludeProviderThreadIds: new Set(),
+        cursorByProviderThreadId: new Map([
+          ["known", "2026-05-03T03:09:20.000Z:idle"],
+          ["older-known", "2026-05-03T03:09:20.000Z:idle"],
+        ]),
+        stopAfterKnownPage: true,
+        includeUnchangedMetadata: true,
+      },
+      (cursor) =>
+        Effect.sync(() => {
+          requestedCursors.push(cursor);
+          return pages.get(cursor)!;
+        }),
+    );
+
+    expect(result.threads.map((thread) => thread.id)).toEqual(["new"]);
+    expect(result.metadataThreads.map((thread) => thread.id)).toEqual(["known", "older-known"]);
+    expect(requestedCursors).toEqual([undefined, "older-page"]);
+  }),
+);
+
+it.effect("materializes unchanged metadata without re-reading its transcript", () =>
+  Effect.gen(function* () {
+    const readThreadIds: string[] = [];
+    const persisted = yield* materializeCodexPersistedThreads(
+      {
+        threads: [makeListedThread("changed")],
+        metadataThreads: [makeListedThread("unchanged", { preview: "Existing work" })],
+      },
+      (threadId) =>
+        Effect.sync(() => {
+          readThreadIds.push(threadId);
+          return {
+            thread: makeReadThread({ id: threadId, preview: "Changed work" }),
+          } as EffectCodexSchema.V2ThreadReadResponse;
+        }),
+    );
+
+    expect(readThreadIds).toEqual(["changed"]);
+    expect(
+      persisted.map((thread) => ({
+        id: thread.providerThreadId,
+        title: thread.title,
+        messages: thread.messages,
+      })),
+    ).toEqual([
+      { id: "changed", title: "Changed work", messages: [] },
+      { id: "unchanged", title: "Existing work", messages: [] },
+    ]);
   }),
 );
 

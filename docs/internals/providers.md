@@ -51,8 +51,10 @@ Clients never call a provider directly. They dispatch orchestration commands ove
 `orchestration.dispatchCommand`, defined with the rest of the orchestration surface in
 [`orchestration.ts`][contracts]. The client-dispatchable provider-facing commands are
 `thread.turn.start`, `thread.turn.interrupt`, `thread.approval.respond`,
-`thread.user-input.respond`, `thread.checkpoint.revert`, and `thread.session.stop`, plus the mode
-setters `thread.runtime-mode.set` and `thread.interaction-mode.set`.
+`thread.user-input.respond`, `thread.turn.recover`, `thread.checkpoint.revert`, and
+`thread.session.stop`, plus the mode setters `thread.runtime-mode.set` and
+`thread.interaction-mode.set`. `thread.turn.recover` references an already-persisted user message;
+it never creates another message event.
 
 The engine persists an event for the command, and a server-side reactor performs the provider call.
 Provider output comes back as internal commands such as `thread.message.assistant.delta` and
@@ -76,9 +78,16 @@ Persisted conversation convergence is separate from those workers.
 [`ProviderThreadReconciler`][reconciler] groups compatible Codex instances by continuation identity
 and serializes background discovery with exact per-thread reconciliation. The durable identity is
 the continuation key plus the provider thread ID. An external conversation is assigned to the
-project matching its working directory, or to **Unassigned Codex threads** when no project matches.
-A Codex identity already bound to a native T3 thread always reconciles into that original thread and
-preserves its provider instance and model ownership.
+project matching its Git repository root, with its working directory as fallback; the reconciler
+creates the deterministic project when it does not exist. A Codex identity already bound to a native
+T3 thread always reconciles into that original thread and preserves its provider instance and model
+ownership.
+
+Periodic reconciliation and exact thread reads stay incremental. The explicit Settings operation
+requests a complete `thread/list` scan, including unchanged visible sessions as metadata-only
+records; only new or changed conversations require `thread/read`. A server-owned single-flight
+coordinator publishes replayable `discovering`, `reconciling`, `completed`, and `failed` status over
+`subscribeProviderThreadSync`, so the operation survives navigation and client reconnects.
 
 Missing messages enter through the internal `thread.message.import` command with deterministic
 command and message IDs. Imported message events are marked historical, so projections create
@@ -90,6 +99,21 @@ reads remain available if Codex is temporarily unavailable. `thread.turn.start` 
 reconciliation must finish before the local user command is persisted, preventing a stale local
 prompt from overtaking externally appended turns. Background loops start only after server
 activation, and all clients observe the resulting ordinary orchestration projections.
+
+### Codex active-writer recovery
+
+Codex rejects `thread/resume` while another Codex process owns the conversation writer. The adapter
+does not delete the lock and does not auto-fork. `ProviderCommandReactor` replaces the provider's raw
+error with a stable user-safe message and appends a
+`provider.thread.active-writer-conflict` activity containing the pending message ID.
+
+The web client and its desktop wrapper expose **Retry** and **Continue in a copy**. Retry re-emits
+`thread.turn-start-requested` for the same message and resumes the same provider thread. Copy passes
+an explicit fork continuation mode to the Codex adapter, which calls `thread/fork`, persists the new
+resume cursor, and then sends that same message. The command is authorized only while the thread is
+in the matching recoverable error state. Mobile receives the sanitized projected error and shares
+the typed recovery command through `packages/client-runtime`; this change deliberately does not add
+a new native mobile chat banner because mobile currently has no thread-detail error action surface.
 
 ### Buffered assistant delivery
 

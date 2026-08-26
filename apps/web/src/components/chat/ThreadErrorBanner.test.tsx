@@ -4,12 +4,38 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   dismissThreadErrorBannerForSession,
   getThreadErrorBannerKey,
+  getActiveWriterRecoveryMessageId,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
   ThreadErrorBanner,
 } from "./ThreadErrorBanner";
 
 describe("ThreadErrorBanner", () => {
+  it("derives recovery only from the current active-writer error", () => {
+    const activities = [
+      {
+        kind: "provider.thread.active-writer-conflict",
+        payload: { messageId: "message-1", canFork: true },
+      },
+    ];
+
+    expect(
+      getActiveWriterRecoveryMessageId({
+        sessionStatus: "error",
+        error:
+          "This Codex session is open in another client. Close it there and retry, or continue in a copy.",
+        activities,
+      }),
+    ).toBe("message-1");
+    expect(
+      getActiveWriterRecoveryMessageId({
+        sessionStatus: "starting",
+        error: null,
+        activities,
+      }),
+    ).toBeNull();
+  });
+
   it("stays hidden after its current error is dismissed", () => {
     const bannerKey = getThreadErrorBannerKey("env:thread-a", "Aborted");
     dismissThreadErrorBannerForSession(bannerKey);
@@ -84,5 +110,22 @@ describe("ThreadErrorBanner", () => {
     expect(markup).toContain("min-h-7 pt-1 sm:min-h-6 sm:pt-0.5");
     expect(markup).toContain("h-lh w-4");
     expect(markup).toContain("h-lh self-start");
+  });
+
+  it("explains how to release a Codex writer and offers retry or copy actions", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadErrorBanner
+        error="This Codex session is open in another client."
+        activeWriterRecovery={{
+          pending: false,
+          onRetry: () => {},
+          onFork: () => {},
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Close the session in the Codex app or type /exit in its terminal");
+    expect(markup).toContain("I&#x27;ve closed it — retry");
+    expect(markup).toContain("Continue in a copy");
   });
 });
