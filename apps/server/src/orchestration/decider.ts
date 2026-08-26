@@ -1121,7 +1121,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      if (thread.snoozedUntil !== null) {
+      if (thread.snoozedUntil != null) {
         lifecycleResetEvents.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
