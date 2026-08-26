@@ -19,7 +19,9 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 
-const PAGE_SIZE = 100;
+// Keep discovery passes comfortably below the adapter timeout even when a Codex home
+// contains long-running threads whose full turn history is expensive to read.
+const PAGE_SIZE = 5;
 const THREAD_READ_CONCURRENCY = 4;
 const FORCE_KILL_AFTER = "2 seconds" as const;
 
@@ -223,38 +225,61 @@ export const listCodexThreadsForRead = <E>(
   requestPage: (
     cursor: string | undefined,
   ) => Effect.Effect<EffectCodexSchema.V2ThreadListResponse, E>,
-): Effect.Effect<ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>, E> =>
+  pagination?: {
+    readonly startCursor?: string | undefined;
+    readonly maxPages?: number | undefined;
+  },
+): Effect.Effect<
+  {
+    readonly threads: ReadonlyArray<EffectCodexSchema.V2ThreadListResponse["data"][number]>;
+    readonly nextCursor: string | null;
+  },
+  E
+> =>
   Effect.gen(function* () {
     const selected: Array<EffectCodexSchema.V2ThreadListResponse["data"][number]> = [];
-    let cursor: string | null | undefined;
+    let cursor: string | null | undefined = pagination?.startCursor;
+    let pagesRead = 0;
     do {
       const page = yield* requestPage(cursor ?? undefined);
+      pagesRead += 1;
       const changed = selectCodexThreadsForRead(page.data, discoveryInput);
       selected.push(...changed);
+      cursor = page.nextCursor;
       if (discoveryInput?.stopAfterKnownPage === true && changed.length === 0) {
         break;
       }
-      cursor = page.nextCursor;
+      if (pagination?.maxPages !== undefined && pagesRead >= pagination.maxPages) {
+        break;
+      }
     } while (cursor);
-    return selected;
+    return { threads: selected, nextCursor: cursor ?? null };
   }).pipe(Effect.withSpan("listCodexThreadsForRead"));
 
 export const discoverCodexThreads = Effect.fn("discoverCodexThreads")(function* (
   config: CodexSettings,
   environment?: NodeJS.ProcessEnv,
   discoveryInput?: ProviderPersistedThreadDiscoveryInput,
+  pagination?: {
+    readonly startCursor?: string | undefined;
+    readonly maxPages?: number | undefined;
+  },
 ) {
   const client = yield* makeCodexDiscoveryClient(config, environment);
-  const listed = yield* listCodexThreadsForRead(discoveryInput, (cursor) =>
-    client.request("thread/list", {
-      ...(cursor !== undefined ? { cursor } : {}),
-      limit: PAGE_SIZE,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-    }),
+  const listed = yield* listCodexThreadsForRead(
+    discoveryInput,
+    (cursor) =>
+      client.request("thread/list", {
+        ...(cursor !== undefined ? { cursor } : {}),
+        limit: PAGE_SIZE,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+      }),
+    pagination,
   );
 
-  return yield* readCodexThreadSnapshots(listed, (threadId) =>
+  const threads = yield* readCodexThreadSnapshots(listed.threads, (threadId) =>
     client.request("thread/read", { threadId, includeTurns: true }),
   );
+  return { threads, nextCursor: listed.nextCursor };
 });

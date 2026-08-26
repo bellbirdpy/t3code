@@ -1886,20 +1886,36 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   let completedInitialPersistedDiscovery = false;
+  let initialPersistedDiscoveryCursor: string | undefined;
   const discoverPersistedThreads: NonNullable<CodexAdapterShape["discoverPersistedThreads"]> = (
     input,
   ) =>
     Effect.scoped(
-      discoverCodexThreads(codexConfig, options?.environment, {
-        excludeProviderThreadIds: input?.excludeProviderThreadIds ?? new Set(),
-        cursorByProviderThreadId: input?.cursorByProviderThreadId ?? new Map(),
-        stopAfterKnownPage: completedInitialPersistedDiscovery,
-      }).pipe(
-        Effect.tap(() =>
+      discoverCodexThreads(
+        codexConfig,
+        options?.environment,
+        {
+          excludeProviderThreadIds: input?.excludeProviderThreadIds ?? new Set(),
+          cursorByProviderThreadId: input?.cursorByProviderThreadId ?? new Map(),
+          stopAfterKnownPage: completedInitialPersistedDiscovery,
+        },
+        completedInitialPersistedDiscovery
+          ? undefined
+          : { startCursor: initialPersistedDiscoveryCursor, maxPages: 1 },
+      ).pipe(
+        Effect.tap((result) =>
           Effect.sync(() => {
-            completedInitialPersistedDiscovery = true;
+            if (!completedInitialPersistedDiscovery) {
+              if (result.nextCursor === null) {
+                completedInitialPersistedDiscovery = true;
+                initialPersistedDiscoveryCursor = undefined;
+              } else {
+                initialPersistedDiscoveryCursor = result.nextCursor;
+              }
+            }
           }),
         ),
+        Effect.map((result) => result.threads),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         Effect.timeout("2 minutes"),
         Effect.mapError(

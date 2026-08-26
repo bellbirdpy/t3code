@@ -225,7 +225,7 @@ it.effect("stops incremental paging after the first fully known page", () =>
       ],
     ]);
 
-    const selected = yield* listCodexThreadsForRead(
+    const result = yield* listCodexThreadsForRead(
       {
         excludeProviderThreadIds: new Set(),
         cursorByProviderThreadId: new Map([["known", "2026-05-03T03:09:20.000Z:idle"]]),
@@ -238,7 +238,52 @@ it.effect("stops incremental paging after the first fully known page", () =>
         }),
     );
 
-    expect(selected.map((thread) => thread.id)).toEqual(["new"]);
+    expect(result.threads.map((thread) => thread.id)).toEqual(["new"]);
     expect(requestedCursors).toEqual([undefined, "known-page"]);
+  }),
+);
+
+it.effect("returns the next cursor when an initial scan pauses after one page", () =>
+  Effect.gen(function* () {
+    const requestedCursors: Array<string | undefined> = [];
+    const result = yield* listCodexThreadsForRead(
+      {
+        excludeProviderThreadIds: new Set(),
+        cursorByProviderThreadId: new Map(),
+      },
+      (cursor) =>
+        Effect.sync(() => {
+          requestedCursors.push(cursor);
+          return {
+            data: [makeListedThread(cursor === undefined ? "recent" : "older")],
+            nextCursor: cursor === undefined ? "page-2" : null,
+          } as EffectCodexSchema.V2ThreadListResponse;
+        }),
+      { maxPages: 1 },
+    );
+
+    expect(result.threads.map((thread) => thread.id)).toEqual(["recent"]);
+    expect(result.nextCursor).toBe("page-2");
+    expect(requestedCursors).toEqual([undefined]);
+
+    const resumed = yield* listCodexThreadsForRead(
+      {
+        excludeProviderThreadIds: new Set(),
+        cursorByProviderThreadId: new Map(),
+      },
+      (cursor) =>
+        Effect.sync(() => {
+          requestedCursors.push(cursor);
+          return {
+            data: [makeListedThread(cursor === undefined ? "recent" : "older")],
+            nextCursor: cursor === undefined ? "page-2" : null,
+          } as EffectCodexSchema.V2ThreadListResponse;
+        }),
+      { startCursor: result.nextCursor ?? undefined, maxPages: 1 },
+    );
+
+    expect(resumed.threads.map((thread) => thread.id)).toEqual(["older"]);
+    expect(resumed.nextCursor).toBeNull();
+    expect(requestedCursors).toEqual([undefined, "page-2"]);
   }),
 );
