@@ -105,9 +105,35 @@ export function resolveWebIconOverrides(
 
 export const DEVELOPMENT_ICON_OVERRIDES = resolveWebIconOverrides("development", "dist/client");
 
+export const BELLBIRD_NAMED_WEB_ASSET_OVERRIDES = [
+  {
+    sourceRelativePath: BRAND_ASSET_PATHS.productionWebFaviconIco,
+    targetRelativePath: "dist/client/bellbird-favicon.ico",
+  },
+  {
+    sourceRelativePath: BRAND_ASSET_PATHS.productionWebFavicon16Png,
+    targetRelativePath: "dist/client/bellbird-favicon-16x16.png",
+  },
+  {
+    sourceRelativePath: BRAND_ASSET_PATHS.productionWebFavicon32Png,
+    targetRelativePath: "dist/client/bellbird-favicon-32x32.png",
+  },
+  {
+    sourceRelativePath: BRAND_ASSET_PATHS.productionWebAppleTouchIconPng,
+    targetRelativePath: "dist/client/bellbird-apple-touch-icon.png",
+  },
+  {
+    sourceRelativePath: "assets/bellbird/logo-onedrive.png",
+    targetRelativePath: "dist/client/bellbird-mark.png",
+  },
+] as const satisfies ReadonlyArray<IconOverride>;
+
 // Bellbird's self-hosted runtime is a production product build even when it is
 // assembled locally rather than published through the upstream npm workflow.
-export const BELLBIRD_BUILD_ICON_OVERRIDES = resolveWebIconOverrides("production", "dist/client");
+export const BELLBIRD_BUILD_ICON_OVERRIDES = [
+  ...resolveWebIconOverrides("production", "dist/client"),
+  ...BELLBIRD_NAMED_WEB_ASSET_OVERRIDES,
+];
 
 export const DEVELOPMENT_PUBLIC_ICON_OVERRIDES = resolveWebIconOverrides(
   "development",

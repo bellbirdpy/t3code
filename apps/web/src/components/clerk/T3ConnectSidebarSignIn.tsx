@@ -7,6 +7,8 @@ import { MobileClientsUserProfilePage } from "./MobileClientsUserProfilePage";
 import { T3ConnectUserProfilePage } from "./T3ConnectUserProfilePage";
 import { useT3ConnectAuthPrompt } from "./useT3ConnectAuthPrompt";
 
+const BELLBIRD_CONNECT_LABEL = "Bellbird Connect";
+
 export function T3ConnectSidebarSignIn() {
   if (!hasCloudPublicConfig()) return null;
 
@@ -41,7 +43,7 @@ function ConfiguredT3ConnectSidebarAvatar() {
         <MobileClientsUserProfilePage />
       </UserButton.UserProfilePage>
       <UserButton.UserProfilePage
-        label="T3 Connect"
+        label={BELLBIRD_CONNECT_LABEL}
         labelIcon={<ServerIcon className="size-4" />}
         url="t3-connect"
       >
@@ -63,7 +65,7 @@ function ConfiguredT3ConnectSidebarSignIn() {
         <SidebarMenuItem>
           <SidebarMenuButton onClick={openAuthPrompt}>
             <LogInIcon />
-            <span>Sign in to T3 Connect</span>
+            <span>Sign in to {BELLBIRD_CONNECT_LABEL}</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

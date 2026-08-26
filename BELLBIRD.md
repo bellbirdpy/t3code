@@ -12,6 +12,17 @@ Bellbird Code is Bellbird's maintained product fork of
 - develop narrowly scoped fixes that can be proposed upstream when appropriate;
 - keep the recovery and rollback paths independent from the application runtime.
 
+## Branding contract
+
+- The web sidebar presents the product as **Bellbird Code** and uses the official
+  Bellbird bird mark stored in `assets/bellbird/logo-onedrive.png`.
+- Sidebar-facing cloud labels use **Bellbird Connect**. Internal `T3` identifiers
+  and protocol paths remain unchanged for upstream compatibility.
+- Browser and PWA metadata use Bellbird-named asset URLs
+  (`/bellbird-favicon*`, `/bellbird-apple-touch-icon.png`, and
+  `/bellbird-mark.png`) so an upstream favicon cached under a legacy URL cannot
+  survive a product upgrade.
+
 ## Branch and release policy
 
 - `main` is the Bellbird integration branch;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   BELLBIRD_BUILD_ICON_OVERRIDES,
+  BELLBIRD_NAMED_WEB_ASSET_OVERRIDES,
   BRAND_ASSET_PATHS,
   DEVELOPMENT_ICON_OVERRIDES,
   DEVELOPMENT_PUBLIC_ICON_OVERRIDES,
@@ -37,9 +38,17 @@ describe("brand-assets", () => {
       sourceRelativePath: BRAND_ASSET_PATHS.productionWebFaviconIco,
       targetRelativePath: "dist/client/favicon.ico",
     });
-    expect(DEVELOPMENT_ICON_OVERRIDES[0].sourceRelativePath).toBe(
-      BRAND_ASSET_PATHS.developmentWebFaviconIco,
-    );
+    expect(DEVELOPMENT_ICON_OVERRIDES[0]).toMatchObject({
+      sourceRelativePath: BRAND_ASSET_PATHS.developmentWebFaviconIco,
+    });
+    expect(BELLBIRD_NAMED_WEB_ASSET_OVERRIDES).toContainEqual({
+      sourceRelativePath: "assets/bellbird/logo-onedrive.png",
+      targetRelativePath: "dist/client/bellbird-mark.png",
+    });
+    expect(BELLBIRD_BUILD_ICON_OVERRIDES).toContainEqual({
+      sourceRelativePath: BRAND_ASSET_PATHS.productionWebFaviconIco,
+      targetRelativePath: "dist/client/bellbird-favicon.ico",
+    });
   });
 
   it("maps development web assets to the public splash and favicon files", () => {
