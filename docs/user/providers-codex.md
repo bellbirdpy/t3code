@@ -28,6 +28,19 @@ Log in with Codex normally:
 codex login
 ```
 
+## Continue Codex Work In T3 Code
+
+T3 Code automatically discovers durable conversations created by Codex CLI and other Codex clients
+that use the same `CODEX_HOME`. Conversations whose working directory matches a T3 Code project
+appear in that project. Other conversations appear under **Unassigned Codex threads**. A new
+external conversation can take up to two minutes to appear.
+
+You can also start a thread in T3 Code, continue it in Codex CLI or the Codex app, and return to the
+same T3 Code thread. T3 Code refreshes the durable Codex history when the thread opens and again
+before it sends your next message. If that refresh fails, T3 Code does not send the new message, so
+it cannot silently fork the conversation from stale history. Retry after the Codex thread is
+available again.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` or `/feedback` followed by a description of the

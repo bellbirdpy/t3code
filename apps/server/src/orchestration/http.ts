@@ -18,6 +18,7 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { ProviderThreadContinuity } from "../provider/Services/ProviderThreadContinuity.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -25,6 +26,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const providerThreadContinuity = yield* ProviderThreadContinuity;
 
     return handlers
       .handle(
@@ -65,6 +67,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.threadSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          yield* providerThreadContinuity.reconcileThread(args.params.threadId).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Failed to reconcile provider thread before HTTP snapshot", {
+                threadId: args.params.threadId,
+                detail: cause.message,
+              }),
+            ),
+          );
           const snapshot = yield* projectionSnapshotQuery
             .getThreadDetailSnapshot(
               args.params.threadId,
@@ -96,7 +106,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          return yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+          const continuityPreflight =
+            normalizedCommand.type === "thread.turn.start"
+              ? providerThreadContinuity
+                  .reconcileThread(normalizedCommand.threadId)
+                  .pipe(Effect.asVoid)
+              : Effect.void;
+          return yield* continuityPreflight.pipe(
+            Effect.andThen(orchestrationEngine.dispatch(normalizedCommand)),
             Effect.tapError(() =>
               cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
             ),

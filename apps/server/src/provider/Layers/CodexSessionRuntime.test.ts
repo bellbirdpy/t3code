@@ -815,7 +815,7 @@ describe("openCodexThread", () => {
     }),
   );
 
-  it.effect("propagates non-recoverable resume failures", () =>
+  it.effect("does not fork a fresh thread when the durable thread is owned elsewhere", () =>
     Effect.gen(function* () {
       const client = {
         request: <M extends "thread/start" | "thread/resume">(
@@ -826,7 +826,7 @@ describe("openCodexThread", () => {
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
                 code: -32603,
-                errorMessage: "timed out waiting for server",
+                errorMessage: "thread is currently owned by another Codex process",
               }),
             );
           }
@@ -847,7 +847,7 @@ describe("openCodexThread", () => {
       }).pipe(Effect.flip);
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
-      NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+      NodeAssert.equal(error.errorMessage, "thread is currently owned by another Codex process");
     }),
   );
 });

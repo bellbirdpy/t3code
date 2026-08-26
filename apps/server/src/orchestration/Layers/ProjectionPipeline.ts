@@ -133,7 +133,9 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
 // A full refresh loads all thread history, so skip events that cannot change the summary.
 function shouldRefreshThreadShellSummary(event: OrchestrationEvent): boolean {
   if (event.type === "thread.message-sent") {
-    return event.payload.role === "user";
+    // The turn projector refreshes historical messages after both message and
+    // turn rows exist. Refreshing here runs too early and clears latestTurnId.
+    return event.payload.historical !== true && event.payload.role === "user";
   }
 
   if (event.type !== "thread.activity-appended") {
@@ -890,6 +892,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            latestTurnId:
+              event.type === "thread.message-sent" &&
+              event.payload.historical === true &&
+              event.payload.turnId !== null
+                ? event.payload.turnId
+                : existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
           if (shouldRefreshThreadShellSummary(event)) {
@@ -1327,7 +1335,41 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent": {
-          if (event.payload.turnId === null || event.payload.role !== "assistant") {
+          if (event.payload.turnId === null) {
+            return;
+          }
+          if (event.payload.role === "user") {
+            if (event.payload.historical !== true) {
+              return;
+            }
+            const existingTurn = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnId,
+            });
+            if (Option.isNone(existingTurn)) {
+              yield* projectionTurnRepository.upsertByTurnId({
+                turnId: event.payload.turnId,
+                threadId: event.payload.threadId,
+                // Imported user history is already settled; it is not a queued
+                // message waiting for ProviderCommandReactor to start.
+                pendingMessageId: null,
+                sourceProposedPlanThreadId: null,
+                sourceProposedPlanId: null,
+                assistantMessageId: null,
+                state: "completed",
+                requestedAt: event.payload.createdAt,
+                startedAt: event.payload.createdAt,
+                completedAt: event.payload.updatedAt,
+                checkpointTurnCount: null,
+                checkpointRef: null,
+                checkpointStatus: null,
+                checkpointFiles: [],
+              });
+            }
+            yield* refreshThreadShellSummary(event.payload.threadId);
+            return;
+          }
+          if (event.payload.role !== "assistant") {
             return;
           }
           // A completed assistant message only settles the turn once the
@@ -1364,6 +1406,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
             });
+            if (event.payload.historical === true) {
+              yield* refreshThreadShellSummary(event.payload.threadId);
+            }
             return;
           }
           yield* projectionTurnRepository.upsertByTurnId({
@@ -1382,6 +1427,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointStatus: null,
             checkpointFiles: [],
           });
+          if (event.payload.historical === true) {
+            yield* refreshThreadShellSummary(event.payload.threadId);
+          }
           return;
         }
 

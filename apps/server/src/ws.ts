@@ -86,6 +86,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
+import * as ProviderThreadContinuity from "./provider/Services/ProviderThreadContinuity.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -462,6 +463,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
+      const providerThreadContinuity = yield* ProviderThreadContinuity.ProviderThreadContinuity;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1083,6 +1085,18 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        const continuityPreflight =
+          normalizedCommand.type === "thread.turn.start"
+            ? providerThreadContinuity.reconcileThread(normalizedCommand.threadId).pipe(
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(
+                    cause,
+                    "Failed to reconcile provider thread before starting the turn",
+                  ),
+                ),
+                Effect.asVoid,
+              )
+            : Effect.void;
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
@@ -1093,7 +1107,7 @@ const makeWsRpcLayer = (
               );
 
         return startup
-          .enqueueCommand(dispatchEffect)
+          .enqueueCommand(continuityPreflight.pipe(Effect.andThen(dispatchEffect)))
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
@@ -1504,6 +1518,18 @@ const makeWsRpcLayer = (
                 // fresh thread detail instead of an unbounded replay.
               }
 
+              // HTTP-loaded snapshots already reconcile before their sequence is
+              // passed into this subscription. Reconcile here only on the
+              // fallback snapshot path, avoiding a duplicate Codex process and
+              // exact read for the normal HTTP-then-WebSocket flow.
+              yield* providerThreadContinuity.reconcileThread(input.threadId).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Failed to reconcile provider thread before subscribing", {
+                    threadId: input.threadId,
+                    detail: cause.message,
+                  }),
+                ),
+              );
               const snapshot = yield* projectionSnapshotQuery
                 .getThreadDetailSnapshot(
                   input.threadId,

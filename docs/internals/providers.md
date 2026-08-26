@@ -36,6 +36,12 @@ Two registries separate configuration from live processes:
 [`ProviderService`][service] sits on top. It combines the adapter registry with the provider session
 directory to route session and turn operations for a thread, so callers name a thread, not an agent.
 
+Adapters can optionally expose `discoverPersistedThreads` and `readPersistedThread`. Codex
+implements both through [`CodexThreadDiscovery.ts`][codex-discovery] using app-server
+`thread/list` and `thread/read`; it never parses `CODEX_HOME` session files directly. Discovery does
+one complete scan after adapter creation, then later passes stop after the first fully known page.
+Exact reads keep a thread current even when an update shares a coarse discovery timestamp.
+
 Adding a driver means writing the driver plus adapter and adding it to `BUILT_IN_DRIVERS`. No
 orchestration, contract, or client change is required for the common case.
 
@@ -66,6 +72,25 @@ synchronization.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
 
+Persisted conversation convergence is separate from those workers.
+[`ProviderThreadReconciler`][reconciler] groups compatible Codex instances by continuation identity
+and serializes background discovery with exact per-thread reconciliation. The durable identity is
+the continuation key plus the provider thread ID. An external conversation is assigned to the
+project matching its working directory, or to **Unassigned Codex threads** when no project matches.
+A Codex identity already bound to a native T3 thread always reconciles into that original thread and
+preserves its provider instance and model ownership.
+
+Missing messages enter through the internal `thread.message.import` command with deterministic
+command and message IDs. Imported message events are marked historical, so projections create
+completed turns without pending provider work or retroactive checkpoints. The discovery cursor is
+advanced only after every import command lands, making a crash retry safe.
+
+HTTP and WebSocket thread reads attempt exact reconciliation before loading the projection. Those
+reads remain available if Codex is temporarily unavailable. `thread.turn.start` is stricter: exact
+reconciliation must finish before the local user command is persisted, preventing a stale local
+prompt from overtaking externally appended turns. Background loops start only after server
+activation, and all clients observe the resulting ordinary orchestration projections.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each
@@ -85,6 +110,8 @@ when a request opens (approval) or user input is requested, via
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
 [registry]: ../../apps/server/src/provider/Services/ProviderAdapterRegistry.ts
 [service]: ../../apps/server/src/provider/Layers/ProviderService.ts
+[codex-discovery]: ../../apps/server/src/provider/Layers/CodexThreadDiscovery.ts
+[reconciler]: ../../apps/server/src/provider/Layers/ProviderThreadReconciler.ts
 [contracts]: ../../packages/contracts/src/orchestration.ts
 [worker]: ../../packages/shared/src/DrainableWorker.ts
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts

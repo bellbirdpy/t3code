@@ -65,6 +65,7 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { discoverCodexThreads, readCodexPersistedThread } from "./CodexThreadDiscovery.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -1884,6 +1885,35 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       })),
     );
 
+  let completedInitialPersistedDiscovery = false;
+  const discoverPersistedThreads: NonNullable<CodexAdapterShape["discoverPersistedThreads"]> = (
+    input,
+  ) =>
+    Effect.scoped(
+      discoverCodexThreads(codexConfig, options?.environment, {
+        excludeProviderThreadIds: input?.excludeProviderThreadIds ?? new Set(),
+        cursorByProviderThreadId: input?.cursorByProviderThreadId ?? new Map(),
+        stopAfterKnownPage: completedInitialPersistedDiscovery,
+      }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            completedInitialPersistedDiscovery = true;
+          }),
+        ),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.timeout("2 minutes"),
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/list",
+              detail: cause.message,
+              cause,
+            }),
+        ),
+      ),
+    );
+
   const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
     if (!Number.isInteger(numTurns) || numTurns < 1) {
       return Effect.fail(
@@ -1973,6 +2003,25 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       yield* stopSessionInternal(session);
     });
 
+  const readPersistedThread: NonNullable<CodexAdapterShape["readPersistedThread"]> = (
+    providerThreadId,
+  ) =>
+    Effect.scoped(
+      readCodexPersistedThread(codexConfig, options?.environment, providerThreadId).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.timeout("2 minutes"),
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/read",
+              detail: cause.message,
+              cause,
+            }),
+        ),
+      ),
+    );
+
   const listSessions: CodexAdapterShape["listSessions"] = () =>
     Effect.forEach(
       Array.from(sessions.values()).filter((session) => !session.stopped),
@@ -2006,6 +2055,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     sendTurn,
     interruptTurn,
     readThread,
+    discoverPersistedThreads,
+    readPersistedThread,
     rollbackThread,
     uploadFeedback,
     respondToRequest,
