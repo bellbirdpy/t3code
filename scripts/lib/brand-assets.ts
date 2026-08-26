@@ -105,6 +105,10 @@ export function resolveWebIconOverrides(
 
 export const DEVELOPMENT_ICON_OVERRIDES = resolveWebIconOverrides("development", "dist/client");
 
+// Bellbird's self-hosted runtime is a production product build even when it is
+// assembled locally rather than published through the upstream npm workflow.
+export const BELLBIRD_BUILD_ICON_OVERRIDES = resolveWebIconOverrides("production", "dist/client");
+
 export const DEVELOPMENT_PUBLIC_ICON_OVERRIDES = resolveWebIconOverrides(
   "development",
   "apps/web/public",

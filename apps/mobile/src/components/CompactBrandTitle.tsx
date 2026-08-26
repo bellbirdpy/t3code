@@ -46,7 +46,7 @@ export function CompactBrandTitle(
   return (
     <View
       aria-level={1}
-      accessibilityLabel="T3 Code, Threads"
+      accessibilityLabel="Bellbird Code, Threads"
       accessible
       role="heading"
       style={{

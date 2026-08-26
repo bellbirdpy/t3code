@@ -1,8 +1,10 @@
-# T3 Code
+# Bellbird Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+Bellbird Code is Bellbird's maintained, self-hosted agent harness control surface, based on the open-source [T3 Code](https://github.com/pingdotgg/t3code) project. It enables control of the agents on your machine from web, mobile and desktop clients.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they're set up on your computer, T3 Code can control them.
+It works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they are set up on your computer, Bellbird Code can control them.
+
+The Bellbird deployment is built from a reviewed commit of this fork. Internal compatibility names such as the `t3` CLI, `T3CODE_*` environment variables and the `t3code://` protocol remain unchanged so upstream updates and existing data stay compatible. See [BELLBIRD.md](./BELLBIRD.md) for governance and deployment rules.
 
 ## "Wait, what are you selling me?"
 
@@ -21,7 +23,7 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 > - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
-### Try it out (install-free)
+### Try upstream T3 Code (install-free)
 
 The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):
 
@@ -29,7 +31,7 @@ The easiest way to test T3 Code is to run the server in your terminal (requires 
 npx t3@latest
 ```
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+This command installs the upstream npm release, not Bellbird Code. Bellbird deployments are built from this repository at an exact commit.
 
 Tip: Use `npx t3@latest --help` for the full CLI reference.
 

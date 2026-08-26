@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  BELLBIRD_BUILD_ICON_OVERRIDES,
   BRAND_ASSET_PATHS,
   DEVELOPMENT_ICON_OVERRIDES,
   DEVELOPMENT_PUBLIC_ICON_OVERRIDES,
@@ -31,11 +32,14 @@ describe("brand-assets", () => {
     ]);
   });
 
-  it("maps server build web assets to development icons", () => {
-    expect(DEVELOPMENT_ICON_OVERRIDES[0]).toEqual({
-      sourceRelativePath: BRAND_ASSET_PATHS.developmentWebFaviconIco,
+  it("maps the Bellbird server build to production artwork", () => {
+    expect(BELLBIRD_BUILD_ICON_OVERRIDES[0]).toEqual({
+      sourceRelativePath: BRAND_ASSET_PATHS.productionWebFaviconIco,
       targetRelativePath: "dist/client/favicon.ico",
     });
+    expect(DEVELOPMENT_ICON_OVERRIDES[0].sourceRelativePath).toBe(
+      BRAND_ASSET_PATHS.developmentWebFaviconIco,
+    );
   });
 
   it("maps development web assets to the public splash and favicon files", () => {

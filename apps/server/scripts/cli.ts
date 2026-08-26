@@ -11,7 +11,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
-  DEVELOPMENT_ICON_OVERRIDES,
+  BELLBIRD_BUILD_ICON_OVERRIDES,
   resolveWebAssetBrandForPackageVersion,
   resolveWebIconOverrides,
 } from "../../../scripts/lib/brand-assets.ts";
@@ -112,14 +112,14 @@ const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
   );
 });
 
-const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")(function* (
+const applyBellbirdIconOverrides = Effect.fn("applyBellbirdIconOverrides")(function* (
   repoRoot: string,
   serverDir: string,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
 
-  for (const override of DEVELOPMENT_ICON_OVERRIDES) {
+  for (const override of BELLBIRD_BUILD_ICON_OVERRIDES) {
     const sourcePath = path.join(repoRoot, override.sourceRelativePath);
     const targetPath = path.join(serverDir, override.targetRelativePath);
 
@@ -133,7 +133,7 @@ const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")
     yield* fs.copyFile(sourcePath, targetPath);
   }
 
-  yield* Effect.log("[cli] Applied development icon overrides to dist/client");
+  yield* Effect.log("[cli] Applied Bellbird production icon overrides to dist/client");
 });
 
 // ---------------------------------------------------------------------------
@@ -167,7 +167,7 @@ const buildCmd = Command.make(
 
       if (yield* fs.exists(webDist)) {
         yield* fs.copy(webDist, clientTarget);
-        yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
+        yield* applyBellbirdIconOverrides(repoRoot, serverDir);
         yield* Effect.log("[cli] Bundled web app into dist/client");
       } else {
         yield* Effect.logWarning("[cli] Web dist not found — skipping client bundle.");

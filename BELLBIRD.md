@@ -1,11 +1,13 @@
-# Bellbird T3 Code fork
+# Bellbird Code
 
-This repository is Bellbird's maintained fork of
+Bellbird Code is Bellbird's maintained product fork of
 [`pingdotgg/t3code`](https://github.com/pingdotgg/t3code).
 
 ## Purpose
 
-- provide a controlled, reproducible T3 Code build for Bellbird;
+- provide a controlled, reproducible Bellbird Code build;
+- apply Bellbird's product name and official bird mark without renaming upstream
+  compatibility identifiers;
 - preserve secure self-hosted access through private network boundaries;
 - develop narrowly scoped fixes that can be proposed upstream when appropriate;
 - keep the recovery and rollback paths independent from the application runtime.
