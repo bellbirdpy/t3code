@@ -4,6 +4,7 @@ import {
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
   type ServerLifecycleStreamReadyEvent,
+  type ProviderThreadSyncStatus,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
   WS_METHODS,
@@ -69,6 +70,7 @@ const IDLE_SERVER_UPDATE_STATE: ServerUpdateState = { status: "idle" };
 const EMPTY_SERVER_UPDATE_STATE_ATOM = Atom.make<ServerUpdateState>(IDLE_SERVER_UPDATE_STATE).pipe(
   Atom.withLabel("environment-data:server:update-state:empty"),
 );
+const IDLE_PROVIDER_THREAD_SYNC_STATUS: ProviderThreadSyncStatus = { status: "idle" };
 const serverUpdateStateAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make<ServerUpdateState>(IDLE_SERVER_UPDATE_STATE).pipe(
     Atom.withLabel(`environment-data:server:update-state:${environmentId}`),
@@ -693,12 +695,27 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:providers:${environmentId}`),
     ),
   );
+  const providerThreadSyncProjection = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:provider-thread-sync-projection",
+    tag: WS_METHODS.subscribeProviderThreadSync,
+    idleTtlMs: 0,
+  });
+  const providerThreadSyncStatusAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): ProviderThreadSyncStatus =>
+        Option.getOrElse(
+          AsyncResult.value(get(providerThreadSyncProjection({ environmentId, input: {} }))),
+          () => IDLE_PROVIDER_THREAD_SYNC_STATUS,
+        ),
+    ).pipe(Atom.withLabel(`environment-data:server:provider-thread-sync:${environmentId}`)),
+  );
 
   return {
     configValueAtom,
     updateStateAtom,
     settingsValueAtom,
     providersValueAtom,
+    providerThreadSyncStatusAtom,
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,
@@ -740,6 +757,14 @@ export function createServerEnvironmentAtoms<R, E>(
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    startProviderThreadSync: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:start-provider-thread-sync",
+      tag: WS_METHODS.serverStartProviderThreadSync,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,

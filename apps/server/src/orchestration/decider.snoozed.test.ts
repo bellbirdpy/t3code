@@ -23,10 +23,12 @@ const SNOOZED_AT = "1969-12-30T00:00:00.000Z";
 
 function makeReadModel(input: {
   readonly snoozedUntil?: string | null;
+  readonly omitSnoozedUntil?: boolean;
   readonly snoozedAt?: string | null;
   readonly archivedAt?: string | null;
   readonly activities?: OrchestrationThread["activities"];
   readonly messages?: OrchestrationThread["messages"];
+  readonly session?: OrchestrationThread["session"];
 }): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -47,18 +49,65 @@ function makeReadModel(input: {
         archivedAt: input.archivedAt ?? null,
         settledOverride: null,
         settledAt: null,
-        snoozedUntil: input.snoozedUntil ?? null,
+        ...(input.omitSnoozedUntil ? {} : { snoozedUntil: input.snoozedUntil ?? null }),
         snoozedAt: input.snoozedAt ?? (input.snoozedUntil != null ? SNOOZED_AT : null),
         deletedAt: null,
         messages: input.messages ?? [],
         proposedPlans: [],
         activities: input.activities ?? [],
         checkpoints: [],
-        session: null,
+        session: input.session ?? null,
       },
     ],
     updatedAt: NOW,
   };
+}
+
+function makeRecoverableReadModel(input: {
+  readonly messageId: MessageId;
+  readonly snoozedUntil?: string | null;
+  readonly omitSnoozedUntil?: boolean;
+}): OrchestrationReadModel {
+  return makeReadModel({
+    ...(input.snoozedUntil !== undefined ? { snoozedUntil: input.snoozedUntil } : {}),
+    ...(input.omitSnoozedUntil ? { omitSnoozedUntil: true } : {}),
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "error",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: "Codex session is open elsewhere",
+      updatedAt: NOW,
+    },
+    messages: [
+      {
+        id: input.messageId,
+        role: "user",
+        text: "Continue",
+        turnId: null,
+        streaming: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ],
+    activities: [
+      {
+        id: EventId.make(`active-writer-conflict-${input.messageId}`),
+        tone: "error",
+        kind: "provider.thread.active-writer-conflict",
+        summary: "Codex session is open elsewhere",
+        payload: {
+          messageId: input.messageId,
+          canFork: true,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        turnId: null,
+        createdAt: NOW,
+      },
+    ],
+  });
 }
 
 it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
@@ -281,6 +330,53 @@ it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
       if (unsnoozed?.type === "thread.unsnoozed") {
         expect(unsnoozed.payload.reason).toBe("activity");
       }
+    }),
+  );
+
+  it.effect("recovering an active-writer conflict spends the snooze return ticket", () =>
+    Effect.gen(function* () {
+      const messageId = MessageId.make("message-recover");
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.recover",
+          commandId: CommandId.make("cmd-turn-recover"),
+          threadId: ThreadId.make("thread-1"),
+          messageId,
+          strategy: "retry",
+          createdAt: NOW,
+        },
+        readModel: makeRecoverableReadModel({
+          messageId,
+          snoozedUntil: FUTURE_WAKE,
+        }),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.unsnoozed",
+        "thread.turn-start-requested",
+      ]);
+    }),
+  );
+
+  it.effect("recovering an awake legacy thread does not emit an unsnoozed event", () =>
+    Effect.gen(function* () {
+      const messageId = MessageId.make("message-recover-awake");
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.recover",
+          commandId: CommandId.make("cmd-turn-recover-awake"),
+          threadId: ThreadId.make("thread-1"),
+          messageId,
+          strategy: "retry",
+          createdAt: NOW,
+        },
+        readModel: makeRecoverableReadModel({
+          messageId,
+          omitSnoozedUntil: true,
+        }),
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual(["thread.turn-start-requested"]);
     }),
   );
 });

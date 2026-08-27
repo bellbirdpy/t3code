@@ -362,6 +362,21 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE =
+  "This Codex session is open in another client. Close it there and retry, or continue in a copy.";
+
+export const CodexActiveWriterConflictActivityPayload = Schema.Struct({
+  messageId: MessageId,
+  canFork: Schema.Literal(true),
+  modelSelection: Schema.optional(ModelSelection),
+  titleSeed: Schema.optional(TrimmedNonEmptyString),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+});
+export type CodexActiveWriterConflictActivityPayload =
+  typeof CodexActiveWriterConflictActivityPayload.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -592,6 +607,13 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    */
   afterSequence: Schema.optionalKey(NonNegativeInt),
   /**
+   * Requests exact provider reconciliation before replaying from
+   * `afterSequence`. Warm-cache resumes set this because, unlike a cursor
+   * produced by a fresh HTTP snapshot, their provider history may have changed
+   * while T3 was disconnected.
+   */
+  reconcileBeforeReplay: Schema.optionalKey(Schema.Boolean),
+  /**
    * Requests an explicit marker after the subscription has emitted its initial
    * snapshot or catch-up replay and before it begins emitting live events.
    */
@@ -788,6 +810,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  projectId: Schema.optional(ProjectId),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -863,6 +886,15 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  createdAt: IsoDateTime,
+});
+
+const ThreadTurnRecoverCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.recover"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  strategy: Schema.Literals(["retry", "fork"]),
   createdAt: IsoDateTime,
 });
 
@@ -951,6 +983,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadTurnRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -979,6 +1012,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadTurnRecoverCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1011,6 +1045,17 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+const ThreadMessageImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  turnId: TurnId,
   createdAt: IsoDateTime,
 });
 
@@ -1062,6 +1107,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadMessageImportCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1227,6 +1273,7 @@ export const ThreadPinReorderedPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
+  projectId: Schema.optional(ProjectId),
   title: Schema.optional(TrimmedNonEmptyString),
   /** Intent marker consumed by the title-generation reactor. Keeping this on
       the existing event lets older clients safely ignore the new field. */
@@ -1264,6 +1311,10 @@ export const ThreadMessageSentPayload = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  // Historical provider messages are projected into the transcript without
+  // requesting work from the provider. Optional keeps persisted events and
+  // older clients wire-compatible.
+  historical: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1278,6 +1329,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  continuationMode: Schema.optional(Schema.Literal("fork")),
   createdAt: IsoDateTime,
 });
 

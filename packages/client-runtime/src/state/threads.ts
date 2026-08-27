@@ -590,6 +590,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           yield* SubscriptionRef.set(lastSequence, 0);
           current = yield* SubscriptionRef.get(state);
         }
+        let loadedHttpSnapshot = false;
         if (Option.isNone(current.data) && current.status !== "deleted") {
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
@@ -611,6 +612,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : undefined,
           );
           if (Option.isSome(httpSnapshot)) {
+            loadedHttpSnapshot = true;
             yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
             current = yield* SubscriptionRef.get(state);
           }
@@ -629,6 +631,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         return {
           threadId,
           ...(canResume ? { afterSequence: sequence } : {}),
+          // A warm cache did not pass through the HTTP snapshot endpoint, so
+          // the provider may contain externally appended turns that have not
+          // emitted T3 events yet. Reconcile before the server captures the
+          // replay head; a freshly loaded HTTP snapshot already did this.
+          ...(canResume && !loadedHttpSnapshot ? { reconcileBeforeReplay: true as const } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           // The WS fallback snapshot (sent when afterSequence is missing or
           // the gap is too large) should be windowed the same as the HTTP

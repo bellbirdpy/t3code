@@ -357,6 +357,7 @@ export function createDevRunnerEnv({
       // apps/web/vite.config.ts. Over a shared origin that is invisible: the
       // page loads and only HMR quietly dials the wrong machine.
       delete output.HOST;
+      delete output.T3CODE_WEB_BIND_HOST;
       if (mode === "dev" || mode === "dev:web") {
         // Browser dev is single-origin: everything (including /ws) is proxied
         // through Vite, so the client must resolve its backend from
@@ -796,6 +797,11 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
           if (env.T3CODE_BUNDLED_DEV === undefined) {
             env.T3CODE_BUNDLED_DEV = "1";
           }
+          // Tailscale proxies to IPv4 loopback. `localhost` may make Vite bind
+          // only ::1 on macOS, which leaves the shared origin returning 502.
+          // Keep HOST unset so HMR still derives the remote browser's origin.
+          env.T3CODE_WEB_BIND_HOST = DESKTOP_DEV_LOOPBACK_HOST;
+
           yield* Effect.logInfo(`[dev-runner] shared on tailnet: ${shared.url}`);
         }
       }

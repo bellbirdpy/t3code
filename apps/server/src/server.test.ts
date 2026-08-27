@@ -115,6 +115,7 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
+import * as ProviderThreadContinuity from "./provider/Services/ProviderThreadContinuity.ts";
 import { ProviderAdapterRequestError } from "./provider/Errors.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -390,6 +391,9 @@ const buildAppUnderTest = (options?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
+    providerThreadContinuity?: Partial<
+      ProviderThreadContinuity.ProviderThreadContinuity["Service"]
+    >;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
@@ -648,6 +652,14 @@ const buildAppUnderTest = (options?: {
           Layer.mock(ProviderService.ProviderService)({
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
             ...options?.layers?.providerService,
+          }),
+          Layer.mock(ProviderThreadContinuity.ProviderThreadContinuity)({
+            reconcileThread: () => Effect.succeed(false),
+            requestReconcileThread: () => Effect.void,
+            startSyncAll: Effect.succeed({ status: "idle" }),
+            getSyncStatus: Effect.succeed({ status: "idle" }),
+            streamSyncStatus: Stream.make({ status: "idle" }),
+            ...options?.layers?.providerThreadContinuity,
           }),
         ),
       ),
@@ -4486,6 +4498,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("starts Codex history synchronization remotely and streams server-owned progress", () =>
+    Effect.gen(function* () {
+      const running = {
+        status: "running" as const,
+        phase: "reconciling" as const,
+        startedAt: "2026-08-26T20:00:00.000Z",
+        progress: {
+          total: 91,
+          completed: 18,
+          organized: 12,
+          updated: 4,
+          unchanged: 2,
+          failed: 0,
+        },
+      };
+      const completed = {
+        status: "completed" as const,
+        startedAt: running.startedAt,
+        finishedAt: "2026-08-26T20:01:00.000Z",
+        progress: { ...running.progress, completed: 91, organized: 80, unchanged: 7 },
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            startSyncAll: Effect.succeed(running),
+            getSyncStatus: Effect.succeed(running),
+            streamSyncStatus: Stream.make(running, completed),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const started = yield* client[WS_METHODS.serverStartProviderThreadSync]({});
+            const progress = yield* client[WS_METHODS.subscribeProviderThreadSync]({}).pipe(
+              Stream.runCollect,
+            );
+            return { started, progress: Array.from(progress) };
+          }),
+        ),
+      );
+
+      assert.deepStrictEqual(result, { started: running, progress: [running, completed] });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("uploads image bytes through a signed URL issued by websocket rpc", () =>
     Effect.gen(function* () {
       const config = yield* buildAppUnderTest();
@@ -5253,6 +5313,106 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         },
         { surface: "mobile", appVersion: "1.2.3" },
       ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("reconciles an existing provider thread before dispatching a new turn", () =>
+    Effect.gen(function* () {
+      const effects: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            reconcileThread: (threadId) =>
+              Effect.sync(() => {
+                effects.push(`reconcile:${threadId}`);
+                return true;
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(`dispatch:${command.type}`);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-continuity-turn-start"),
+            threadId: defaultThreadId,
+            message: {
+              messageId: MessageId.make("msg-continuity-turn-start"),
+              role: "user",
+              text: "Continue after Codex",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ),
+      );
+
+      assert.equal(response.sequence, 1);
+      assert.deepEqual(effects, [`reconcile:${defaultThreadId}`, "dispatch:thread.turn.start"]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("does not dispatch a turn when provider reconciliation fails", () =>
+    Effect.gen(function* () {
+      let dispatchCount = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            reconcileThread: (threadId) =>
+              Effect.fail(
+                new ProviderThreadContinuity.ProviderThreadContinuityError({
+                  threadId,
+                  operation: "reconcile",
+                  message: "Codex thread/read failed",
+                  cause: new Error("Codex thread/read failed"),
+                }),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.sync(() => {
+                dispatchCount += 1;
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-continuity-failed-turn-start"),
+            threadId: defaultThreadId,
+            message: {
+              messageId: MessageId.make("msg-continuity-failed-turn-start"),
+              role: "user",
+              text: "Do not fork",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }).pipe(Effect.result),
+        ),
+      );
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(dispatchCount, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6230,30 +6390,77 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("marks a socket thread snapshot as synchronized when requested", () =>
+  it.effect(
+    "serves a cached socket thread snapshot after requesting background reconciliation",
+    () =>
+      Effect.gen(function* () {
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        const effects: string[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            providerThreadContinuity: {
+              requestReconcileThread: (threadId) =>
+                Effect.sync(() => {
+                  effects.push(`request:${threadId}`);
+                }),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.sync(() => {
+                  effects.push("snapshot");
+                  return Option.some({ snapshotSequence: 1, thread });
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              requestCompletionMarker: true,
+            }).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+
+        assert.equal(items[0]?.kind, "snapshot");
+        assert.deepEqual(items[1], { kind: "synchronized" });
+        assert.deepEqual(effects, [`request:${defaultThreadId}`, "snapshot"]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves a cached HTTP thread snapshot after requesting background reconciliation", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const effects: string[] = [];
       yield* buildAppUnderTest({
         layers: {
+          providerThreadContinuity: {
+            requestReconcileThread: (threadId) =>
+              Effect.sync(() => {
+                effects.push(`request:${threadId}`);
+              }),
+          },
           projectionSnapshotQuery: {
             getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 1, thread })),
+              Effect.sync(() => {
+                effects.push("snapshot");
+                return Option.some({ snapshotSequence: 1, thread });
+              }),
           },
         },
       });
 
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
-        ),
-      );
+      const baseUrl = yield* getHttpServerUrl();
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const response = yield* measureHttpGet({
+        url: `${baseUrl}/api/orchestration/threads/${defaultThreadId}`,
+        headers: { cookie },
+      });
 
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(response.status, 200);
+      assert.deepEqual(effects, [`request:${defaultThreadId}`, "snapshot"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6456,6 +6663,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("subscribeThread bounds catch-up replay to the captured head", () =>
     Effect.gen(function* () {
       let replayLimit: number | undefined;
+      let reconcileCalls = 0;
       const now = "2026-01-01T00:00:00.000Z";
       const messageEvent = {
         sequence: 3,
@@ -6482,6 +6690,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
+          providerThreadContinuity: {
+            reconcileThread: () =>
+              Effect.sync(() => {
+                reconcileCalls += 1;
+                return true;
+              }),
+          },
           orchestrationEngine: {
             latestSequence: Effect.succeed(50),
             readEvents: (_afterSequence, limit) => {
@@ -6510,6 +6725,48 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // The replay is bounded to the head captured before the read, not
       // Number.MAX_SAFE_INTEGER.
       assert.equal(replayLimit, 50);
+      assert.equal(reconcileCalls, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("requests warm-cache reconciliation before capturing its replay head", () =>
+    Effect.gen(function* () {
+      const effects: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          providerThreadContinuity: {
+            requestReconcileThread: (threadId) =>
+              Effect.sync(() => {
+                effects.push(`request:${threadId}`);
+              }),
+          },
+          orchestrationEngine: {
+            latestSequence: Effect.sync(() => {
+              effects.push("head");
+              return 0;
+            }),
+            readEvents: () => {
+              effects.push("replay");
+              return Stream.empty;
+            },
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const firstItem = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
+            reconcileBeforeReplay: true,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      );
+
+      assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
+      assert.deepEqual(effects, [`request:${defaultThreadId}`, "head", "replay"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

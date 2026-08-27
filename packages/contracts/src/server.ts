@@ -121,6 +121,40 @@ export const ServerProviderContinuation = Schema.Struct({
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 
+export const ProviderThreadSyncProgress = Schema.Struct({
+  total: NonNegativeInt,
+  completed: NonNegativeInt,
+  organized: NonNegativeInt,
+  updated: NonNegativeInt,
+  unchanged: NonNegativeInt,
+  failed: NonNegativeInt,
+});
+export type ProviderThreadSyncProgress = typeof ProviderThreadSyncProgress.Type;
+
+export const ProviderThreadSyncStatus = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("idle") }),
+  Schema.Struct({
+    status: Schema.Literal("running"),
+    phase: Schema.Literals(["discovering", "reconciling"]),
+    startedAt: IsoDateTime,
+    progress: ProviderThreadSyncProgress,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("completed"),
+    startedAt: IsoDateTime,
+    finishedAt: IsoDateTime,
+    progress: ProviderThreadSyncProgress,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    startedAt: IsoDateTime,
+    finishedAt: IsoDateTime,
+    progress: ProviderThreadSyncProgress,
+    message: TrimmedNonEmptyString,
+  }),
+]);
+export type ProviderThreadSyncStatus = typeof ProviderThreadSyncStatus.Type;
+
 export const ServerProviderVersionAdvisoryStatus = Schema.Literals([
   "unknown",
   "current",

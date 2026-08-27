@@ -301,6 +301,7 @@ import {
 } from "./chat/ProviderStatusBanner";
 import {
   dismissThreadErrorBannerForSession,
+  getActiveWriterRecovery,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
@@ -1298,6 +1299,9 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const recoverThreadTurn = useAtomCommand(threadEnvironment.recoverTurn, {
+    reportFailure: false,
+  });
   const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -1612,6 +1616,48 @@ function ChatViewContent(props: ChatViewProps) {
   const threadError = isServerThread
     ? (localServerError ?? activeServerThread?.session?.lastError ?? null)
     : localDraftError;
+  const activeWriterRecoveryRaw = isServerThread
+    ? getActiveWriterRecovery({
+        sessionStatus: activeServerThread?.session?.status,
+        error: threadError,
+        activities: activeServerThread?.activities ?? [],
+      })
+    : null;
+  const activeWriterRecovery =
+    activeThread?.messages.find(
+      (message) => message.role === "user" && message.id === activeWriterRecoveryRaw?.messageId,
+    ) !== undefined
+      ? activeWriterRecoveryRaw
+      : null;
+  const [pendingActiveWriterConflictId, setPendingActiveWriterConflictId] = useState<string | null>(
+    null,
+  );
+  const activeWriterRecoveryPending =
+    activeWriterRecovery?.conflictId === pendingActiveWriterConflictId;
+  const handleActiveWriterRecovery = useCallback(
+    async (strategy: "retry" | "fork") => {
+      if (!activeThread || activeWriterRecovery === null) return;
+      setPendingActiveWriterConflictId(activeWriterRecovery.conflictId);
+      const result = await recoverThreadTurn({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          messageId: activeWriterRecovery.messageId,
+          strategy,
+        },
+      });
+      if (result._tag === "Failure") {
+        setPendingActiveWriterConflictId(null);
+        if (!isAtomCommandInterrupted(result)) {
+          toastManager.add({
+            type: "error",
+            title: "Could not continue the Codex session",
+          });
+        }
+      }
+    },
+    [activeThread, activeWriterRecovery, environmentId, recoverThreadTurn],
+  );
   // Dismissals can only mask the shown error, never clear it: a server thread
   // keeps its error in session.lastError, so clearing the local shadow would
   // just fall through to the persisted one. Mask the current error until a
@@ -6869,6 +6915,15 @@ function ChatViewContent(props: ChatViewProps) {
 
         <ThreadErrorBanner
           error={visibleThreadError}
+          {...(activeWriterRecovery !== null
+            ? {
+                activeWriterRecovery: {
+                  pending: activeWriterRecoveryPending,
+                  onRetry: () => void handleActiveWriterRecovery("retry"),
+                  onFork: () => void handleActiveWriterRecovery("fork"),
+                },
+              }
+            : {})}
           onDismiss={() => {
             setThreadError(activeThread.id, null);
             dismissThreadErrorBannerForSession(threadErrorBannerKey);

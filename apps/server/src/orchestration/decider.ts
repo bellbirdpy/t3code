@@ -1,4 +1,5 @@
 import {
+  CodexActiveWriterConflictActivityPayload,
   EventId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -8,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -23,6 +25,9 @@ import {
 import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const isCodexActiveWriterConflictActivityPayload = Schema.is(
+  CodexActiveWriterConflictActivityPayload,
+);
 
 // Session adoption takes seconds; a user message still unadopted after this
 // window is a failed/stale start, not pending work. Mirrors the client's
@@ -811,6 +816,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.projectId !== undefined) {
+        yield* requireProject({
+          readModel,
+          command,
+          projectId: command.projectId,
+        });
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -828,6 +840,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(command.projectId !== undefined ? { projectId: command.projectId } : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.regenerateTitle === true
             ? {
@@ -1037,6 +1050,94 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+    }
+
+    case "thread.turn.recover": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = thread.messages.find(
+        (entry) => entry.id === command.messageId && entry.role === "user",
+      );
+      const conflict = thread.activities.findLast(
+        (activity) => activity.kind === "provider.thread.active-writer-conflict",
+      );
+      const conflictPayload =
+        conflict !== undefined && isCodexActiveWriterConflictActivityPayload(conflict.payload)
+          ? conflict.payload
+          : null;
+      if (
+        message === undefined ||
+        thread.session?.status !== "error" ||
+        conflictPayload?.messageId !== command.messageId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has no recoverable active-writer conflict for message '${command.messageId}'.`,
+        });
+      }
+      const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          ...(conflictPayload.modelSelection !== undefined
+            ? { modelSelection: conflictPayload.modelSelection }
+            : {}),
+          ...(conflictPayload.titleSeed !== undefined
+            ? { titleSeed: conflictPayload.titleSeed }
+            : {}),
+          runtimeMode: conflictPayload.runtimeMode,
+          interactionMode: conflictPayload.interactionMode,
+          ...(conflictPayload.sourceProposedPlan !== undefined
+            ? { sourceProposedPlan: conflictPayload.sourceProposedPlan }
+            : {}),
+          ...(command.strategy === "fork" ? { continuationMode: "fork" as const } : {}),
+          createdAt: command.createdAt,
+        },
+      };
+      const lifecycleResetEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (thread.settledOverride !== null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (thread.snoozedUntil != null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      return [...lifecycleResetEvents, turnStartRequestedEvent];
     }
 
     case "thread.turn.interrupt": {
@@ -1249,6 +1350,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.delta,
           turnId: command.turnId ?? null,
           streaming: true,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.message.import": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          role: command.role,
+          text: command.text,
+          turnId: command.turnId,
+          streaming: false,
+          historical: true,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

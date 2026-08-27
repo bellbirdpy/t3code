@@ -36,6 +36,12 @@ Two registries separate configuration from live processes:
 [`ProviderService`][service] sits on top. It combines the adapter registry with the provider session
 directory to route session and turn operations for a thread, so callers name a thread, not an agent.
 
+Adapters can optionally expose `discoverPersistedThreads` and `readPersistedThread`. Codex
+implements both through [`CodexThreadDiscovery.ts`][codex-discovery] using app-server
+`thread/list` and `thread/read`; it never parses `CODEX_HOME` session files directly. Discovery does
+one complete scan after adapter creation, then later passes stop after the first fully known page.
+Exact reads keep a thread current even when an update shares a coarse discovery timestamp.
+
 Adding a driver means writing the driver plus adapter and adding it to `BUILT_IN_DRIVERS`. No
 orchestration, contract, or client change is required for the common case.
 
@@ -45,8 +51,10 @@ Clients never call a provider directly. They dispatch orchestration commands ove
 `orchestration.dispatchCommand`, defined with the rest of the orchestration surface in
 [`orchestration.ts`][contracts]. The client-dispatchable provider-facing commands are
 `thread.turn.start`, `thread.turn.interrupt`, `thread.approval.respond`,
-`thread.user-input.respond`, `thread.checkpoint.revert`, and `thread.session.stop`, plus the mode
-setters `thread.runtime-mode.set` and `thread.interaction-mode.set`.
+`thread.user-input.respond`, `thread.turn.recover`, `thread.checkpoint.revert`, and
+`thread.session.stop`, plus the mode setters `thread.runtime-mode.set` and
+`thread.interaction-mode.set`. `thread.turn.recover` references an already-persisted user message;
+it never creates another message event.
 
 The engine persists an event for the command, and a server-side reactor performs the provider call.
 Provider output comes back as internal commands such as `thread.message.assistant.delta` and
@@ -65,6 +73,55 @@ synchronization.
    calls.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
+
+Persisted conversation convergence is separate from those workers.
+[`ProviderThreadReconciler`][reconciler] groups compatible Codex instances by continuation identity
+and serializes background discovery with exact per-thread reconciliation. The durable identity is
+the continuation key plus the provider thread ID. An external conversation is assigned to the
+project matching its Git repository root, with its working directory as fallback; the reconciler
+creates the deterministic project when it does not exist. A Codex identity already bound to a native
+T3 thread always reconciles into that original thread and preserves its provider instance and model
+ownership.
+
+Periodic reconciliation and exact thread reads stay incremental. The explicit Settings operation
+requests a complete `thread/list` scan, including unchanged visible sessions as metadata-only
+records; only new or changed conversations require `thread/read`. A server-owned single-flight
+coordinator publishes replayable `discovering`, `reconciling`, `completed`, and `failed` status over
+`subscribeProviderThreadSync`, so the operation survives navigation and client reconnects.
+
+Missing messages enter through the internal `thread.message.import` command with deterministic
+command and message IDs. Imported message events are marked historical, so projections create
+completed turns without pending provider work or retroactive checkpoints. The discovery cursor is
+advanced only after every import command lands, making a crash retry safe.
+
+HTTP and WebSocket thread reads request exact reconciliation but load the cached projection without
+waiting for the provider read. Per-thread requests are coalesced while one is in flight and run in
+the reconciler layer scope. The WebSocket subscription attaches its live event buffer first, so
+messages imported after the cached snapshot or replay head still reach the client as ordinary
+orchestration events. Reads therefore stay responsive if Codex is slow or temporarily unavailable.
+
+`thread.turn.start` is deliberately stricter: exact reconciliation must finish before the local
+user command is persisted, preventing a stale local prompt from overtaking externally appended
+turns. When a successful reconciliation observes provider messages newer than a generic error
+session, it repairs that session to `stopped` and clears `lastError` without deleting the historical activity.
+A typed active-writer conflict remains in error because a read-only transcript refresh does not
+prove that exclusive writer ownership ended. Background loops start only after server activation,
+and all clients observe the resulting ordinary orchestration projections.
+
+### Codex active-writer recovery
+
+Codex rejects `thread/resume` while another Codex process owns the conversation writer. The adapter
+does not delete the lock and does not auto-fork. `ProviderCommandReactor` replaces the provider's raw
+error with a stable user-safe message and appends a
+`provider.thread.active-writer-conflict` activity containing the pending message ID.
+
+The web client and its desktop wrapper expose **Retry** and **Continue in a copy**. Retry re-emits
+`thread.turn-start-requested` for the same message and resumes the same provider thread. Copy passes
+an explicit fork continuation mode to the Codex adapter, which calls `thread/fork`, persists the new
+resume cursor, and then sends that same message. The command is authorized only while the thread is
+in the matching recoverable error state. Mobile receives the sanitized projected error and shares
+the typed recovery command through `packages/client-runtime`; this change deliberately does not add
+a new native mobile chat banner because mobile currently has no thread-detail error action surface.
 
 ### Buffered assistant delivery
 
@@ -85,6 +142,8 @@ when a request opens (approval) or user input is requested, via
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
 [registry]: ../../apps/server/src/provider/Services/ProviderAdapterRegistry.ts
 [service]: ../../apps/server/src/provider/Layers/ProviderService.ts
+[codex-discovery]: ../../apps/server/src/provider/Layers/CodexThreadDiscovery.ts
+[reconciler]: ../../apps/server/src/provider/Layers/ProviderThreadReconciler.ts
 [contracts]: ../../packages/contracts/src/orchestration.ts
 [worker]: ../../packages/shared/src/DrainableWorker.ts
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts

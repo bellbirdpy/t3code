@@ -86,6 +86,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
+import * as ProviderThreadContinuity from "./provider/Services/ProviderThreadContinuity.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -462,6 +463,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
+      const providerThreadContinuity = yield* ProviderThreadContinuity.ProviderThreadContinuity;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1083,6 +1085,18 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        const continuityPreflight =
+          normalizedCommand.type === "thread.turn.start"
+            ? providerThreadContinuity.reconcileThread(normalizedCommand.threadId).pipe(
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(
+                    cause,
+                    "Failed to reconcile provider thread before starting the turn",
+                  ),
+                ),
+                Effect.asVoid,
+              )
+            : Effect.void;
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
@@ -1093,7 +1107,7 @@ const makeWsRpcLayer = (
               );
 
         return startup
-          .enqueueCommand(dispatchEffect)
+          .enqueueCommand(continuityPreflight.pipe(Effect.andThen(dispatchEffect)))
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
@@ -1469,6 +1483,14 @@ const makeWsRpcLayer = (
               // thread snapshot instead, exactly like subscribeShell above.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
+                // A cursor restored from client cache has not passed through
+                // the HTTP snapshot endpoint on this connection. Request
+                // reconciliation before capturing the replay head. Provider
+                // events that land after the captured head are already covered
+                // by the live buffer attached above.
+                if (input.reconcileBeforeReplay === true) {
+                  yield* providerThreadContinuity.requestReconcileThread(input.threadId);
+                }
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
@@ -1504,6 +1526,11 @@ const makeWsRpcLayer = (
                 // fresh thread detail instead of an unbounded replay.
               }
 
+              // HTTP-loaded snapshots already request reconciliation before their
+              // sequence is passed into this subscription. Request it here only on
+              // the fallback snapshot path; the cached snapshot renders now and
+              // the live buffer delivers any imported Codex events afterward.
+              yield* providerThreadContinuity.requestReconcileThread(input.threadId);
               const snapshot = yield* projectionSnapshotQuery
                 .getThreadDetailSnapshot(
                   input.threadId,
@@ -1566,6 +1593,12 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverStartProviderThreadSync]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartProviderThreadSync,
+            providerThreadContinuity.startSyncAll,
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerUploadFeedback,
@@ -1617,6 +1650,12 @@ const makeWsRpcLayer = (
                   Effect.forkScoped,
                 ),
             ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.subscribeProviderThreadSync]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeProviderThreadSync,
+            providerThreadContinuity.streamSyncStatus,
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>

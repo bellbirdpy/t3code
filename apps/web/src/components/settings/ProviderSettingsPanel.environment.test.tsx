@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderThreadSyncStatus,
   type ServerProvider,
   type UnifiedSettings,
 } from "@t3tools/contracts";
@@ -17,11 +18,15 @@ const atoms = vi.hoisted(() => ({
   providersAtom: Symbol("providers"),
   refreshProviders: Symbol("refreshProviders"),
   updateProvider: Symbol("updateProvider"),
+  syncStatus: { status: "idle" } as ProviderThreadSyncStatus,
+  syncStatusAtom: Symbol("syncStatus"),
+  startProviderThreadSync: Symbol("startProviderThreadSync"),
 }));
 
 const commands = vi.hoisted(() => ({
   refresh: vi.fn(),
   updateProvider: vi.fn(),
+  startProviderThreadSync: vi.fn(),
 }));
 
 const settingsState = vi.hoisted(() => ({
@@ -49,7 +54,8 @@ vi.mock("react/compiler-runtime", async () => {
 });
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => atoms.providers,
+  useAtomValue: (atom: symbol) =>
+    atom === atoms.providersAtom ? atoms.providers : atoms.syncStatus,
 }));
 
 vi.mock("../../state/server", () => ({
@@ -58,12 +64,18 @@ vi.mock("../../state/server", () => ({
     providersValueAtom: () => atoms.providersAtom,
     refreshProviders: atoms.refreshProviders,
     updateProvider: atoms.updateProvider,
+    providerThreadSyncStatusAtom: () => atoms.syncStatusAtom,
+    startProviderThreadSync: atoms.startProviderThreadSync,
   },
 }));
 
 vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (atom: symbol) =>
-    atom === atoms.refreshProviders ? commands.refresh : commands.updateProvider,
+    atom === atoms.refreshProviders
+      ? commands.refresh
+      : atom === atoms.startProviderThreadSync
+        ? commands.startProviderThreadSync
+        : commands.updateProvider,
 }));
 
 vi.mock("../../hooks/useSettings", () => ({
@@ -136,12 +148,14 @@ describe("EnvironmentProviderSettings routing", () => {
   beforeEach(() => {
     hooks.reset();
     atoms.providers = null;
+    atoms.syncStatus = { status: "idle" };
     settingsState.value = DEFAULT_UNIFIED_SETTINGS;
     settingsState.readEnvironmentIds = [];
     settingsState.updateEnvironmentIds = [];
     settingsState.updateSettings.mockReset();
     commands.refresh.mockReset().mockResolvedValue({ _tag: "Success" });
     commands.updateProvider.mockReset().mockResolvedValue({ _tag: "Success" });
+    commands.startProviderThreadSync.mockReset().mockResolvedValue({ _tag: "Success" });
   });
 
   it("coalesces a nullable provider snapshot before rendering array-backed UI", () => {
@@ -175,6 +189,49 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(commands.updateProvider).toHaveBeenCalledWith({
       environmentId,
       input: { provider: ProviderDriverKind.make("codex"), instanceId: codexId },
+    });
+  });
+
+  it("starts a server-owned Codex history sync and renders its durable progress", async () => {
+    atoms.providers = [provider()];
+    atoms.syncStatus = {
+      status: "running",
+      phase: "reconciling",
+      startedAt: "2026-08-26T20:00:00.000Z",
+      progress: {
+        total: 91,
+        completed: 18,
+        organized: 12,
+        updated: 4,
+        unchanged: 2,
+        failed: 0,
+      },
+    };
+    const panel = renderPanel();
+    const button = visitElements(
+      panel,
+      (element) => element.props["aria-label"] === "Synchronize Codex sessions",
+    );
+    expect(button).not.toBeNull();
+    expect(button?.props.disabled).toBe(true);
+    const progressRow = visitElements(
+      panel,
+      (element) => element.props.description === "18 of 91 sessions processed",
+    );
+    expect(progressRow).not.toBeNull();
+
+    atoms.syncStatus = { status: "idle" };
+    const idlePanel = renderPanel();
+    const idleButton = visitElements(
+      idlePanel,
+      (element) => element.props["aria-label"] === "Synchronize Codex sessions",
+    );
+    (idleButton?.props.onClick as (() => void) | undefined)?.();
+    await flushPromises();
+
+    expect(commands.startProviderThreadSync).toHaveBeenCalledWith({
+      environmentId,
+      input: {},
     });
   });
 

@@ -17,6 +17,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
@@ -31,6 +32,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
+import { ProviderThreadContinuity } from "./provider/Services/ProviderThreadContinuity.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import {
@@ -131,6 +133,18 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
         ),
       ),
       Layer.provideMerge(makeProjectPersistenceLayer(config)),
+      Layer.provide(
+        Layer.succeed(
+          ProviderThreadContinuity,
+          ProviderThreadContinuity.of({
+            reconcileThread: () => Effect.succeed(false),
+            requestReconcileThread: () => Effect.void,
+            startSyncAll: Effect.succeed({ status: "idle" }),
+            getSyncStatus: Effect.succeed({ status: "idle" }),
+            streamSyncStatus: Stream.make({ status: "idle" }),
+          }),
+        ),
+      ),
       Layer.provideMerge(
         NodeHttpServer.layer(NodeHttp.createServer, {
           host: "127.0.0.1",

@@ -1,5 +1,7 @@
 import {
   type ChatAttachment,
+  CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE,
+  type CodexActiveWriterConflictActivityPayload,
   CommandId,
   EventId,
   type ModelSelection,
@@ -29,7 +31,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
-import type { ProviderServiceError } from "../../provider/Errors.ts";
+import { ProviderAdapterProcessError, type ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -48,6 +50,7 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -332,6 +335,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.thread.active-writer-conflict"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -341,6 +345,7 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    readonly payload?: Readonly<Record<string, unknown>>;
   }) =>
     Effect.all({
       commandId: serverCommandId("provider-failure-activity"),
@@ -359,6 +364,7 @@ const make = Effect.gen(function* () {
             payload: {
               detail: input.detail,
               ...(input.requestId ? { requestId: input.requestId } : {}),
+              ...input.payload,
             },
             turnId: input.turnId,
             createdAt: input.createdAt,
@@ -377,6 +383,16 @@ const make = Effect.gen(function* () {
       return providerError.detail;
     }
     return Cause.pretty(cause);
+  };
+
+  const isCodexActiveWriterConflict = (cause: Cause.Cause<unknown>): boolean => {
+    const failReason = cause.reasons.find(Cause.isFailReason);
+    const error = failReason?.error;
+    if (!isProviderAdapterProcessError(error) || error.provider !== "codex") {
+      return false;
+    }
+    const detail = error.detail.toLowerCase();
+    return detail.includes("thread") && detail.includes("already has an active writer");
   };
 
   const setThreadSession = (input: {
@@ -520,6 +536,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly pendingTurnStart?: boolean;
+      readonly continuationMode?: "fork";
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -665,6 +682,7 @@ const make = Effect.gen(function* () {
         ...(thread.title ? { title: thread.title } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(options?.continuationMode === "fork" ? { continuationMode: "fork" as const } : {}),
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -775,6 +793,7 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly continuationMode?: "fork";
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -786,6 +805,7 @@ const make = Effect.gen(function* () {
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
+      ...(input.continuationMode === "fork" ? { continuationMode: "fork" as const } : {}),
     });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
@@ -1168,7 +1188,10 @@ const make = Effect.gen(function* () {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
-      const detail = formatFailureDetail(cause);
+      const activeWriterConflict = isCodexActiveWriterConflict(cause);
+      const detail = activeWriterConflict
+        ? CODEX_ACTIVE_WRITER_CONFLICT_MESSAGE
+        : formatFailureDetail(cause);
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -1177,11 +1200,34 @@ const make = Effect.gen(function* () {
         Effect.flatMap(() =>
           appendProviderFailureActivity({
             threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
+            kind: activeWriterConflict
+              ? "provider.thread.active-writer-conflict"
+              : "provider.turn.start.failed",
+            summary: activeWriterConflict
+              ? "Codex session is open elsewhere"
+              : "Provider turn start failed",
             detail,
             turnId: null,
             createdAt: event.payload.createdAt,
+            ...(activeWriterConflict
+              ? {
+                  payload: {
+                    messageId: event.payload.messageId,
+                    canFork: true,
+                    ...(event.payload.modelSelection !== undefined
+                      ? { modelSelection: event.payload.modelSelection }
+                      : {}),
+                    ...(event.payload.titleSeed !== undefined
+                      ? { titleSeed: event.payload.titleSeed }
+                      : {}),
+                    runtimeMode: event.payload.runtimeMode,
+                    interactionMode: event.payload.interactionMode,
+                    ...(event.payload.sourceProposedPlan !== undefined
+                      ? { sourceProposedPlan: event.payload.sourceProposedPlan }
+                      : {}),
+                  } satisfies CodexActiveWriterConflictActivityPayload,
+                }
+              : {}),
           }),
         ),
         Effect.asVoid,
@@ -1208,6 +1254,9 @@ const make = Effect.gen(function* () {
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.continuationMode !== undefined
+        ? { continuationMode: event.payload.continuationMode }
+        : {}),
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
