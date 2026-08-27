@@ -1484,18 +1484,12 @@ const makeWsRpcLayer = (
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 // A cursor restored from client cache has not passed through
-                // the HTTP snapshot endpoint on this connection. Reconcile
-                // before capturing the replay head so any externally appended
-                // Codex turns are persisted and included in the catch-up.
+                // the HTTP snapshot endpoint on this connection. Request
+                // reconciliation before capturing the replay head. Provider
+                // events that land after the captured head are already covered
+                // by the live buffer attached above.
                 if (input.reconcileBeforeReplay === true) {
-                  yield* providerThreadContinuity.reconcileThread(input.threadId).pipe(
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Failed to reconcile provider thread before replay", {
-                        threadId: input.threadId,
-                        detail: cause.message,
-                      }),
-                    ),
-                  );
+                  yield* providerThreadContinuity.requestReconcileThread(input.threadId);
                 }
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
@@ -1532,18 +1526,11 @@ const makeWsRpcLayer = (
                 // fresh thread detail instead of an unbounded replay.
               }
 
-              // HTTP-loaded snapshots already reconcile before their sequence is
-              // passed into this subscription. Reconcile here only on the
-              // fallback snapshot path, avoiding a duplicate Codex process and
-              // exact read for the normal HTTP-then-WebSocket flow.
-              yield* providerThreadContinuity.reconcileThread(input.threadId).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("Failed to reconcile provider thread before subscribing", {
-                    threadId: input.threadId,
-                    detail: cause.message,
-                  }),
-                ),
-              );
+              // HTTP-loaded snapshots already request reconciliation before their
+              // sequence is passed into this subscription. Request it here only on
+              // the fallback snapshot path; the cached snapshot renders now and
+              // the live buffer delivers any imported Codex events afterward.
+              yield* providerThreadContinuity.requestReconcileThread(input.threadId);
               const snapshot = yield* projectionSnapshotQuery
                 .getThreadDetailSnapshot(
                   input.threadId,

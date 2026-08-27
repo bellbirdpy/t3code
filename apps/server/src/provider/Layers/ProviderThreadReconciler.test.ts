@@ -661,6 +661,254 @@ it.effect("reconciles externally appended turns into the original native T3 thre
   }),
 );
 
+it.effect("heals a stale generic session error after importing newer provider history", () =>
+  Effect.gen(function* () {
+    const commands: OrchestrationCommand[] = [];
+    const externallyContinued = {
+      ...persistedThread,
+      updatedAt: "2026-08-21T03:30:43.000Z",
+      discoveryCursor: "2026-08-21T03:30:43.000Z:idle",
+      messages: [
+        ...persistedThread.messages,
+        {
+          id: "external-assistant-item",
+          sourceOrdinal: 2,
+          role: "assistant" as const,
+          text: "External work completed",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-21T03:30:43.000Z",
+        },
+      ],
+    };
+
+    yield* reconcilePersistedThread({
+      instance,
+      thread: externallyContinued,
+      model: "gpt-5.6-sol",
+      threadByProviderIdentity: new Map([[providerIdentity, importedThreadId]]),
+      directory: {
+        upsert: () => Effect.void,
+      } as unknown as ProviderSessionDirectory["Service"],
+      snapshots: {
+        getThreadShellById: () =>
+          Effect.succeed(
+            Option.some({
+              id: importedThreadId,
+              projectId: "project-1",
+              modelSelection: { instanceId: instance.instanceId, model: "gpt-5.6-sol" },
+            }),
+          ),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.some({ id: "project-1" })),
+        getThreadDetailById: () =>
+          Effect.succeed(
+            Option.some({
+              messages: persistedThread.messages.map((message) => ({
+                id: message.id,
+                role: message.role,
+                text: message.text,
+              })),
+              activities: [
+                {
+                  kind: "provider.turn.start.failed",
+                  createdAt: "2026-08-21T03:25:43.000Z",
+                },
+              ],
+              session: {
+                threadId: importedThreadId,
+                status: "error",
+                providerName: "codex",
+                providerInstanceId: instance.instanceId,
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: "Provider turn start failed",
+                updatedAt: "2026-08-21T03:25:43.000Z",
+              },
+            }),
+          ),
+      } as unknown as ProjectionSnapshotQuery["Service"],
+      engine: {
+        dispatch: (command: OrchestrationCommand) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          }),
+      } as unknown as OrchestrationEngineService["Service"],
+    });
+
+    expect(commands.map((command) => command.type)).toEqual([
+      "thread.message.import",
+      "thread.session.set",
+    ]);
+    expect(commands[1]).toMatchObject({
+      type: "thread.session.set",
+      threadId: importedThreadId,
+      session: {
+        status: "stopped",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-08-21T03:30:43.000Z",
+      },
+      createdAt: "2026-08-21T03:30:43.000Z",
+    });
+  }),
+);
+
+it.effect("heals a stale generic session error when newer history was already imported", () =>
+  Effect.gen(function* () {
+    const commands: OrchestrationCommand[] = [];
+    const externallyContinued = {
+      ...persistedThread,
+      updatedAt: "2026-08-21T03:30:43.000Z",
+      discoveryCursor: "2026-08-21T03:30:43.000Z:idle",
+      messages: [
+        ...persistedThread.messages,
+        {
+          id: "external-assistant-item",
+          sourceOrdinal: 2,
+          role: "assistant" as const,
+          text: "External work completed",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-21T03:30:43.000Z",
+        },
+      ],
+    };
+
+    yield* reconcilePersistedThread({
+      instance,
+      thread: externallyContinued,
+      model: "gpt-5.6-sol",
+      threadByProviderIdentity: new Map([[providerIdentity, importedThreadId]]),
+      directory: {
+        upsert: () => Effect.void,
+      } as unknown as ProviderSessionDirectory["Service"],
+      snapshots: {
+        getThreadShellById: () =>
+          Effect.succeed(
+            Option.some({
+              id: importedThreadId,
+              projectId: "project-1",
+              modelSelection: { instanceId: instance.instanceId, model: "gpt-5.6-sol" },
+            }),
+          ),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.some({ id: "project-1" })),
+        getThreadDetailById: () =>
+          Effect.succeed(
+            Option.some({
+              messages: externallyContinued.messages.map((message) => ({
+                id: message.id,
+                role: message.role,
+                text: message.text,
+              })),
+              activities: [
+                {
+                  kind: "provider.turn.start.failed",
+                  createdAt: "2026-08-21T03:25:43.000Z",
+                },
+              ],
+              session: {
+                threadId: importedThreadId,
+                status: "error",
+                providerName: "codex",
+                providerInstanceId: instance.instanceId,
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: "Provider turn start failed",
+                updatedAt: "2026-08-21T03:25:43.000Z",
+              },
+            }),
+          ),
+      } as unknown as ProjectionSnapshotQuery["Service"],
+      engine: {
+        dispatch: (command: OrchestrationCommand) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          }),
+      } as unknown as OrchestrationEngineService["Service"],
+    });
+
+    expect(commands.map((command) => command.type)).toEqual(["thread.session.set"]);
+  }),
+);
+
+it.effect("keeps an active-writer conflict actionable when newer provider history arrives", () =>
+  Effect.gen(function* () {
+    const commands: OrchestrationCommand[] = [];
+    const externallyContinued = {
+      ...persistedThread,
+      updatedAt: "2026-08-21T03:30:43.000Z",
+      discoveryCursor: "2026-08-21T03:30:43.000Z:idle",
+      messages: [
+        ...persistedThread.messages,
+        {
+          id: "external-assistant-item",
+          sourceOrdinal: 2,
+          role: "assistant" as const,
+          text: "External work completed",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-21T03:30:43.000Z",
+        },
+      ],
+    };
+
+    yield* reconcilePersistedThread({
+      instance,
+      thread: externallyContinued,
+      model: "gpt-5.6-sol",
+      threadByProviderIdentity: new Map([[providerIdentity, importedThreadId]]),
+      directory: {
+        upsert: () => Effect.void,
+      } as unknown as ProviderSessionDirectory["Service"],
+      snapshots: {
+        getThreadShellById: () =>
+          Effect.succeed(
+            Option.some({
+              id: importedThreadId,
+              projectId: "project-1",
+              modelSelection: { instanceId: instance.instanceId, model: "gpt-5.6-sol" },
+            }),
+          ),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.some({ id: "project-1" })),
+        getThreadDetailById: () =>
+          Effect.succeed(
+            Option.some({
+              messages: persistedThread.messages.map((message) => ({
+                id: message.id,
+                role: message.role,
+                text: message.text,
+              })),
+              activities: [
+                {
+                  kind: "provider.thread.active-writer-conflict",
+                  createdAt: "2026-08-21T03:25:43.000Z",
+                },
+              ],
+              session: {
+                threadId: importedThreadId,
+                status: "error",
+                providerName: "codex",
+                providerInstanceId: instance.instanceId,
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: "This Codex session is open in another client",
+                updatedAt: "2026-08-21T03:25:43.000Z",
+              },
+            }),
+          ),
+      } as unknown as ProjectionSnapshotQuery["Service"],
+      engine: {
+        dispatch: (command: OrchestrationCommand) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return { sequence: commands.length };
+          }),
+      } as unknown as OrchestrationEngineService["Service"],
+    });
+
+    expect(commands.map((command) => command.type)).toEqual(["thread.message.import"]);
+  }),
+);
+
 it.effect("does not duplicate native user messages with generated attachment path text", () =>
   Effect.gen(function* () {
     const nativeThreadId = ThreadId.make("native-t3-thread-with-attachment");

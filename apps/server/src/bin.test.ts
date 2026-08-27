@@ -138,6 +138,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
           ProviderThreadContinuity,
           ProviderThreadContinuity.of({
             reconcileThread: () => Effect.succeed(false),
+            requestReconcileThread: () => Effect.void,
             startSyncAll: Effect.succeed({ status: "idle" }),
             getSyncStatus: Effect.succeed({ status: "idle" }),
             streamSyncStatus: Stream.make({ status: "idle" }),

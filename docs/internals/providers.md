@@ -94,11 +94,19 @@ command and message IDs. Imported message events are marked historical, so proje
 completed turns without pending provider work or retroactive checkpoints. The discovery cursor is
 advanced only after every import command lands, making a crash retry safe.
 
-HTTP and WebSocket thread reads attempt exact reconciliation before loading the projection. Those
-reads remain available if Codex is temporarily unavailable. `thread.turn.start` is stricter: exact
-reconciliation must finish before the local user command is persisted, preventing a stale local
-prompt from overtaking externally appended turns. Background loops start only after server
-activation, and all clients observe the resulting ordinary orchestration projections.
+HTTP and WebSocket thread reads request exact reconciliation but load the cached projection without
+waiting for the provider read. Per-thread requests are coalesced while one is in flight and run in
+the reconciler layer scope. The WebSocket subscription attaches its live event buffer first, so
+messages imported after the cached snapshot or replay head still reach the client as ordinary
+orchestration events. Reads therefore stay responsive if Codex is slow or temporarily unavailable.
+
+`thread.turn.start` is deliberately stricter: exact reconciliation must finish before the local
+user command is persisted, preventing a stale local prompt from overtaking externally appended
+turns. When a successful reconciliation observes provider messages newer than a generic error
+session, it repairs that session to `stopped` and clears `lastError` without deleting the historical activity.
+A typed active-writer conflict remains in error because a read-only transcript refresh does not
+prove that exclusive writer ownership ended. Background loops start only after server activation,
+and all clients observe the resulting ordinary orchestration projections.
 
 ### Codex active-writer recovery
 

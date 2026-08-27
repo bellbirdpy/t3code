@@ -67,14 +67,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.threadSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          yield* providerThreadContinuity.reconcileThread(args.params.threadId).pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Failed to reconcile provider thread before HTTP snapshot", {
-                threadId: args.params.threadId,
-                detail: cause.message,
-              }),
-            ),
-          );
+          yield* providerThreadContinuity.requestReconcileThread(args.params.threadId);
           const snapshot = yield* projectionSnapshotQuery
             .getThreadDetailSnapshot(
               args.params.threadId,

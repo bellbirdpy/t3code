@@ -584,6 +584,16 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
       return true;
     });
     updated ||= missingMessages.length > 0;
+    const existingSession = Option.isSome(existingDetail) ? existingDetail.value.session : null;
+    const hasActiveWriterConflict =
+      Option.isSome(existingDetail) &&
+      existingDetail.value.activities?.some(
+        (activity) => activity.kind === "provider.thread.active-writer-conflict",
+      );
+    const staleSessionErrorWasSuperseded =
+      existingSession?.status === "error" &&
+      !hasActiveWriterConflict &&
+      input.thread.messages.some((message) => message.createdAt > existingSession.updatedAt);
 
     yield* Effect.forEach(
       missingMessages,
@@ -610,6 +620,27 @@ export const reconcilePersistedThread = Effect.fn("reconcilePersistedProviderThr
         }),
       { concurrency: 1, discard: true },
     );
+
+    if (staleSessionErrorWasSuperseded) {
+      yield* input.engine.dispatch({
+        type: "thread.session.set",
+        commandId: importCommandId(
+          continuationIdentity,
+          input.thread.providerThreadId,
+          "session-healed",
+          input.thread.updatedAt,
+        ),
+        threadId: targetThreadId,
+        session: {
+          ...existingSession,
+          status: "stopped",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: input.thread.updatedAt,
+        },
+        createdAt: input.thread.updatedAt,
+      });
+    }
 
     // Advance the discovery watermark only after every deterministic message
     // command has landed. A crash mid-import then retries safely on the next
@@ -722,6 +753,7 @@ export const reconcilePersistedProviderThreadById = Effect.fn(
 export const ProviderThreadReconcilerLive = Layer.effect(
   ProviderThreadContinuity,
   Effect.gen(function* () {
+    const scope = yield* Effect.scope;
     const continuityContext = yield* Effect.context<
       | OrchestrationEngineService
       | ProjectionSnapshotQuery
@@ -773,6 +805,40 @@ export const ProviderThreadReconcilerLive = Layer.effect(
           ),
         );
     });
+    const requestedThreadIds = yield* Ref.make(new Set<ThreadId>());
+    const requestReconcileThread = Effect.fn("ProviderThreadContinuity.requestReconcileThread")(
+      function* (threadId: ThreadId) {
+        const accepted = yield* Ref.modify(requestedThreadIds, (current) => {
+          if (current.has(threadId)) return [false, current] as const;
+          const next = new Set(current);
+          next.add(threadId);
+          return [true, next] as const;
+        });
+        if (!accepted) return;
+
+        yield* Effect.forkIn(
+          reconcileThread(threadId).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : Effect.logWarning("Failed to reconcile requested provider thread", {
+                    threadId,
+                    detail: Cause.pretty(cause),
+                  }),
+            ),
+            Effect.ensuring(
+              Ref.update(requestedThreadIds, (current) => {
+                const next = new Set(current);
+                next.delete(threadId);
+                return next;
+              }),
+            ),
+          ),
+          scope,
+          { startImmediately: true },
+        );
+      },
+    );
     const resolveWorkspaceRoot = (cwd: string) =>
       repositoryIdentityResolver
         .resolve(cwd)
@@ -800,6 +866,7 @@ export const ProviderThreadReconcilerLive = Layer.effect(
 
     return ProviderThreadContinuity.of({
       reconcileThread,
+      requestReconcileThread,
       startSyncAll: syncCoordinator.start,
       getSyncStatus: syncCoordinator.getStatus,
       streamSyncStatus: syncCoordinator.changes,

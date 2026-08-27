@@ -655,6 +655,7 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderThreadContinuity.ProviderThreadContinuity)({
             reconcileThread: () => Effect.succeed(false),
+            requestReconcileThread: () => Effect.void,
             startSyncAll: Effect.succeed({ status: "idle" }),
             getSyncStatus: Effect.succeed({ status: "idle" }),
             streamSyncStatus: Stream.make({ status: "idle" }),
@@ -6389,56 +6390,56 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("reconciles before sending a socket thread snapshot", () =>
-    Effect.gen(function* () {
-      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      const effects: string[] = [];
-      yield* buildAppUnderTest({
-        layers: {
-          providerThreadContinuity: {
-            reconcileThread: (threadId) =>
-              Effect.sync(() => {
-                effects.push(`reconcile:${threadId}`);
-                return true;
-              }),
+  it.effect(
+    "serves a cached socket thread snapshot after requesting background reconciliation",
+    () =>
+      Effect.gen(function* () {
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        const effects: string[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            providerThreadContinuity: {
+              requestReconcileThread: (threadId) =>
+                Effect.sync(() => {
+                  effects.push(`request:${threadId}`);
+                }),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.sync(() => {
+                  effects.push("snapshot");
+                  return Option.some({ snapshotSequence: 1, thread });
+                }),
+            },
           },
-          projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.sync(() => {
-                effects.push("snapshot");
-                return Option.some({ snapshotSequence: 1, thread });
-              }),
-          },
-        },
-      });
+        });
 
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const items = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
-            threadId: defaultThreadId,
-            requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
-        ),
-      );
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              requestCompletionMarker: true,
+            }).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
 
-      assert.equal(items[0]?.kind, "snapshot");
-      assert.deepEqual(items[1], { kind: "synchronized" });
-      assert.deepEqual(effects, [`reconcile:${defaultThreadId}`, "snapshot"]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        assert.equal(items[0]?.kind, "snapshot");
+        assert.deepEqual(items[1], { kind: "synchronized" });
+        assert.deepEqual(effects, [`request:${defaultThreadId}`, "snapshot"]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("reconciles before serving an HTTP thread snapshot", () =>
+  it.effect("serves a cached HTTP thread snapshot after requesting background reconciliation", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
       const effects: string[] = [];
       yield* buildAppUnderTest({
         layers: {
           providerThreadContinuity: {
-            reconcileThread: (threadId) =>
+            requestReconcileThread: (threadId) =>
               Effect.sync(() => {
-                effects.push(`reconcile:${threadId}`);
-                return true;
+                effects.push(`request:${threadId}`);
               }),
           },
           projectionSnapshotQuery: {
@@ -6459,7 +6460,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
 
       assert.equal(response.status, 200);
-      assert.deepEqual(effects, [`reconcile:${defaultThreadId}`, "snapshot"]);
+      assert.deepEqual(effects, [`request:${defaultThreadId}`, "snapshot"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6728,16 +6729,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("reconciles a warm-cache thread before capturing its replay head", () =>
+  it.effect("requests warm-cache reconciliation before capturing its replay head", () =>
     Effect.gen(function* () {
       const effects: string[] = [];
       yield* buildAppUnderTest({
         layers: {
           providerThreadContinuity: {
-            reconcileThread: (threadId) =>
+            requestReconcileThread: (threadId) =>
               Effect.sync(() => {
-                effects.push(`reconcile:${threadId}`);
-                return true;
+                effects.push(`request:${threadId}`);
               }),
           },
           orchestrationEngine: {
@@ -6766,7 +6766,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
-      assert.deepEqual(effects, [`reconcile:${defaultThreadId}`, "head", "replay"]);
+      assert.deepEqual(effects, [`request:${defaultThreadId}`, "head", "replay"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -22,6 +22,11 @@ export interface ProviderThreadContinuityShape {
   readonly reconcileThread: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProviderThreadContinuityError>;
+  /**
+   * Request server-owned convergence without waiting for the provider read.
+   * Duplicate requests for one in-flight thread are coalesced.
+   */
+  readonly requestReconcileThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly startSyncAll: Effect.Effect<ProviderThreadSyncStatus>;
   readonly getSyncStatus: Effect.Effect<ProviderThreadSyncStatus>;
   readonly streamSyncStatus: Stream.Stream<ProviderThreadSyncStatus>;

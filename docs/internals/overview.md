@@ -102,11 +102,13 @@ Each of the three services exposes `drain` for exactly this.
 
 [`ProviderThreadReconciler`][reconciler] is a separate activation-gated background service rather
 than a drainable worker. It discovers durable Codex conversations, imports missing historical
-messages through the event-sourced command path, and reconciles an exact provider transcript before
-thread reads and new local turns. Native T3-bound Codex identities remain attached to their original
-thread; unmatched external conversations use a deterministic imported thread and project derived
-from their Git root or working directory. Its explicit maintenance operation is server-owned and
-streams replayable progress, while periodic and per-thread reconciliation remain incremental.
+messages through the event-sourced command path, and reconciles exact provider transcripts. Thread
+reads serve their cached projection while a scope-bound, per-thread-coalesced reconciliation runs in
+the background; new local turns still wait for exact reconciliation before dispatch. Native
+T3-bound Codex identities remain attached to their original thread; unmatched external
+conversations use a deterministic imported thread and project derived from their Git root or working
+directory. Its explicit maintenance operation is server-owned and streams replayable progress,
+while periodic and per-thread reconciliation remain incremental.
 
 Runtime receipts are a test-only mechanism. `RuntimeReceiptBusLive` in
 [`RuntimeReceiptBus.ts`][receipts] publishes nothing; only the test layer is PubSub-backed. Do not
